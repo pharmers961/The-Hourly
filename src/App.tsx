@@ -580,7 +580,7 @@ export default function App() {
       showToast(summary, 'success');
     } catch (err) {
       console.error('Firebase import failed:', err);
-      const detail = err instanceof Error && err.message ? `: ${err.message.slice(0, 140)}` : '. Please try again.';
+      const detail = err instanceof Error && err.message ? `: ${err.message.slice(0, 300)}` : '. Please try again.';
       showToast(`Import failed${detail}`);
     } finally {
       setIsMigrating(false);

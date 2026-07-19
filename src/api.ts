@@ -39,6 +39,25 @@ interface PhotoRow {
   reactions: ReactionRow[];
 }
 
+// Supabase error objects carry more than .message (status, code, hint) but
+// their shape differs between the storage client and PostgREST client;
+// surface everything present so failures are diagnosable from the toast text
+// alone, without needing devtools access.
+function describeError(prefix: string, err: unknown): Error {
+  if (err && typeof err === 'object') {
+    const parts: string[] = [];
+    const anyErr = err as Record<string, unknown>;
+    if (typeof anyErr.message === 'string') parts.push(anyErr.message);
+    if (typeof anyErr.statusCode === 'string' || typeof anyErr.statusCode === 'number') parts.push(`status=${anyErr.statusCode}`);
+    if (typeof anyErr.status === 'number') parts.push(`status=${anyErr.status}`);
+    if (typeof anyErr.code === 'string') parts.push(`code=${anyErr.code}`);
+    if (typeof anyErr.hint === 'string') parts.push(`hint=${anyErr.hint}`);
+    if (typeof anyErr.details === 'string') parts.push(`details=${anyErr.details}`);
+    if (parts.length > 0) return new Error(`${prefix}: ${parts.join(' | ')}`);
+  }
+  return new Error(`${prefix}: ${String(err)}`);
+}
+
 export interface AppData {
   profiles: Record<string, AppUser>;
   photos: Photo[];
@@ -340,7 +359,7 @@ export async function migrateFromFirebase(onProgress: (message: string) => void)
       upsert: true,
     });
     if (uploadError) {
-      throw new Error(`storage upload failed: ${uploadError.message}`);
+      throw describeError('storage upload failed', uploadError);
     }
 
     const { data: photoRow, error: insertError } = await supabase
@@ -355,7 +374,7 @@ export async function migrateFromFirebase(onProgress: (message: string) => void)
       .select('id')
       .single();
     if (insertError) {
-      throw new Error(`photo insert failed: ${insertError.message}`);
+      throw describeError('photo insert failed', insertError);
     }
 
     for (const c of p.comments || []) {
