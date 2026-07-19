@@ -1,11 +1,11 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, Info, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon, Maximize, Clock } from 'lucide-react';
+import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, Info, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon, Maximize, Clock, RefreshCw } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import html2canvas from 'html2canvas';
 import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImageToBlob, getRelativeTime, extractExifGps } from './utils';
 import { supabase, isSupabaseConfigured } from './supabase';
 import * as api from './api';
-import { Photo, User as AppUser, UserSettings } from './types';
+import { Photo, User as AppUser, UserSettings, Group } from './types';
 
 export default function App() {
   const [photos, setPhotos] = useState<Photo[]>([]);
@@ -35,6 +35,25 @@ export default function App() {
   const [toasts, setToasts] = useState<{ id: number; message: string; type: 'error' | 'success' }[]>([]);
   const collageRef = useRef<HTMLDivElement>(null);
 
+  // Groups
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [groupsLoaded, setGroupsLoaded] = useState(false);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(() => localStorage.getItem('selectedGroupId'));
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [manageGroupName, setManageGroupName] = useState('');
+  const [groupMemberRoles, setGroupMemberRoles] = useState<{ profileId: string; role: 'owner' | 'member' }[]>([]);
+  const [hasPendingInvite] = useState(() => !!(localStorage.getItem('pendingJoinCode') || new URLSearchParams(window.location.search).get('join')));
+
+  // Multi-group capture picker
+  const [pendingCaptureFile, setPendingCaptureFile] = useState<File | null>(null);
+  const [captureGroupIds, setCaptureGroupIds] = useState<Set<string>>(new Set());
+
+  // Whether the user has captured a photo in the current real-world hour —
+  // tracked globally (across all their groups), independent of which group
+  // is currently selected, since one capture is shared to chosen groups.
+  const [hasPostedThisHour, setHasPostedThisHour] = useState(false);
+
   const showToast = (message: string, type: 'error' | 'success' = 'error') => {
     const id = Date.now() + Math.random();
     setToasts(prev => [...prev, { id, message, type }]);
@@ -60,6 +79,14 @@ export default function App() {
       window.removeEventListener('error', onError);
       window.removeEventListener('unhandledrejection', onRejection);
     };
+  }, []);
+
+  // Stash a ?join=<code> invite link immediately, before any auth redirect
+  // has a chance to drop the query string, so joining still works after the
+  // magic-link/Google round trip.
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.search).get('join');
+    if (code) localStorage.setItem('pendingJoinCode', code);
   }, []);
 
   // Compatibility shim: the UI below was written against Firebase's auth user
@@ -128,8 +155,14 @@ export default function App() {
   }, [profile?.id]);
 
   const refreshData = useCallback(async () => {
+    if (!selectedGroupId) {
+      setPhotos([]);
+      setUsers({});
+      usersRef.current = {};
+      return;
+    }
     try {
-      const data = await api.fetchAllData();
+      const data = await api.fetchGroupData(selectedGroupId);
       usersRef.current = data.profiles;
       setUsers(data.profiles);
       setPhotos(data.photos);
@@ -163,11 +196,83 @@ export default function App() {
       knownPhotoIds.current = new Set(data.photos.map(p => p.id));
     } catch (err) {
       console.error('Failed to load data:', err);
+      showToast('Failed to load photos. Please try again.');
     }
-  }, []);
+  }, [selectedGroupId]);
 
+  const refreshGroups = useCallback(async () => {
+    if (!profile) return;
+    try {
+      const myGroups = await api.fetchMyGroups(profile.id);
+      setGroups(myGroups);
+      setSelectedGroupId(prev => (prev && myGroups.some(g => g.id === prev) ? prev : (myGroups[0]?.id || null)));
+    } catch (err) {
+      console.error('Failed to load groups:', err);
+      showToast('Failed to load your groups. Please try again.');
+    } finally {
+      setGroupsLoaded(true);
+    }
+  }, [profile?.id]);
+
+  const refreshHasPostedThisHour = useCallback(async () => {
+    if (!profile) {
+      setHasPostedThisHour(false);
+      return;
+    }
+    const now = new Date();
+    const hourStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours()).toISOString();
+    try {
+      setHasPostedThisHour(await api.hasCapturedThisHour(profile.id, hourStart));
+    } catch (err) {
+      console.error('Failed to check hourly capture status:', err);
+    }
+  }, [profile?.id]);
+
+  // Persist the last-viewed group across reloads
+  useEffect(() => {
+    if (selectedGroupId) localStorage.setItem('selectedGroupId', selectedGroupId);
+  }, [selectedGroupId]);
+
+  // Load the signed-in user's groups, and complete a pending invite-link join
+  const pendingJoinHandled = useRef(false);
   useEffect(() => {
     if (!profile) {
+      setGroups([]);
+      setGroupsLoaded(false);
+      setSelectedGroupId(null);
+      return;
+    }
+
+    const joinCode = pendingJoinHandled.current ? null : localStorage.getItem('pendingJoinCode');
+    if (joinCode) {
+      pendingJoinHandled.current = true;
+      api.joinGroupByCode(joinCode)
+        .then(async (group) => {
+          localStorage.removeItem('pendingJoinCode');
+          const url = new URL(window.location.href);
+          url.searchParams.delete('join');
+          window.history.replaceState({}, '', url.toString());
+          await refreshGroups();
+          setSelectedGroupId(group.id);
+          showToast(`Joined "${group.name}"`, 'success');
+        })
+        .catch(err => {
+          console.error('Failed to join group:', err);
+          localStorage.removeItem('pendingJoinCode');
+          showToast('That invite link is invalid or has expired.');
+          refreshGroups();
+        });
+    } else {
+      refreshGroups();
+    }
+  }, [profile?.id, refreshGroups]);
+
+  useEffect(() => {
+    refreshHasPostedThisHour();
+  }, [refreshHasPostedThisHour]);
+
+  useEffect(() => {
+    if (!profile || !selectedGroupId) {
       setPhotos([]);
       setUsers({});
       usersRef.current = {};
@@ -175,11 +280,16 @@ export default function App() {
       return;
     }
 
+    knownPhotoIds.current = null; // reset pulse-tracking when switching groups
     refreshData();
 
     const unsubscribe = api.subscribeRealtime(profile.id, {
       onDataChange: () => {
         refreshData();
+        refreshHasPostedThisHour();
+      },
+      onGroupsChange: () => {
+        refreshGroups();
       },
       onNudge: (fromProfileId) => {
         if (notificationPermission === 'granted') {
@@ -203,7 +313,7 @@ export default function App() {
     });
 
     return unsubscribe;
-  }, [profile?.id, notificationPermission, refreshData]);
+  }, [profile?.id, selectedGroupId, notificationPermission, refreshData, refreshGroups, refreshHasPostedThisHour]);
 
   useEffect(() => {
     if (!initialPhotoLoaded.current) return;
@@ -277,13 +387,22 @@ export default function App() {
 
   const activeUsers: AppUser[] = useMemo(() => Object.values(users), [users]);
 
+  const selectedGroup = useMemo(() => groups.find(g => g.id === selectedGroupId) || null, [groups, selectedGroupId]);
+  const isGroupOwner = selectedGroup?.role === 'owner';
+
   useEffect(() => {
     if (showSettings && user) {
       const displayLocation = activeUsers.find(u => u.id === user.uid)?.settings?.displayLocation || '';
       setLocalLocationInput(displayLocation);
       setLocalNameInput(profile?.name || '');
+      if (selectedGroupId) {
+        setManageGroupName(selectedGroup?.name || '');
+        api.fetchGroupMemberRoles(selectedGroupId)
+          .then(setGroupMemberRoles)
+          .catch(err => console.error('Failed to load group members:', err));
+      }
     }
-  }, [showSettings, user, activeUsers, profile?.name]);
+  }, [showSettings, user, activeUsers, profile?.name, selectedGroupId, selectedGroup?.name]);
 
   const timeSlots = useMemo(() => {
     const isHour12 = activeUsers.find(u => u.id === user?.uid)?.settings?.timeFormat !== '24h';
@@ -291,22 +410,6 @@ export default function App() {
   }, [photos, activeUsers, referenceTimezone, selectedDate, user?.uid]);
 
   const isSelectedDateToday = selectedDate.toDateString() === new Date().toDateString();
-
-  // Whether the user has captured a photo in the current real-world hour —
-  // independent of which date is being browsed, since capture always posts
-  // to now.
-  const hasPostedThisHour = useMemo(() => {
-    if (!user) return false;
-    const now = new Date();
-    return photos.some(p => {
-      if (p.userId !== user.uid) return false;
-      const d = new Date(p.timestamp);
-      return d.getFullYear() === now.getFullYear() &&
-             d.getMonth() === now.getMonth() &&
-             d.getDate() === now.getDate() &&
-             d.getHours() === now.getHours();
-    });
-  }, [photos, user, currentTime]);
 
   const displayedSlots = useMemo(() => {
     return timeSlots.filter(slot => {
@@ -459,7 +562,12 @@ export default function App() {
   useEffect(() => {
     const timer = setInterval(() => {
       const now = new Date();
-      setCurrentTime(now);
+      setCurrentTime(prevTime => {
+        if (prevTime.getHours() !== now.getHours() || prevTime.getDate() !== now.getDate()) {
+          refreshHasPostedThisHour();
+        }
+        return now;
+      });
 
       if (notificationPermission === 'granted') {
         const currentHour = now.getHours();
@@ -474,7 +582,7 @@ export default function App() {
       }
     }, 60000);
     return () => clearInterval(timer);
-  }, [notificationPermission]);
+  }, [notificationPermission, refreshHasPostedThisHour]);
 
   const handleGoogleLogin = async () => {
     try {
@@ -542,20 +650,22 @@ export default function App() {
     fileInputRef.current?.click();
   };
 
-  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file || !user) return;
-    
+  const performCapture = async (file: File, profileId: string, groupIds: string[]) => {
+    if (groupIds.length === 0) {
+      showToast('Select at least one group to share this to.');
+      return;
+    }
     setIsCapturing(true);
     try {
       const imageBlob = await compressImageToBlob(file);
-      const userDisplayLocation = activeUsers.find(u => u.id === user.uid)?.settings?.displayLocation;
+      const userDisplayLocation = activeUsers.find(u => u.id === profileId)?.settings?.displayLocation;
       // Prefer the GPS coordinates embedded in the photo itself; fall back to
       // the device's current position inside fetchEnvironmentalMetadata.
       const exifCoords = await extractExifGps(file);
       const metadata = await fetchEnvironmentalMetadata(userDisplayLocation || undefined, exifCoords || undefined);
 
-      await api.uploadPhoto(user.uid, imageBlob, metadata);
+      await api.uploadPhotoToGroups(profileId, imageBlob, metadata, groupIds);
+      setHasPostedThisHour(true);
       await refreshData();
       showToast('Moment captured', 'success');
     } catch (err) {
@@ -563,10 +673,30 @@ export default function App() {
       showToast('Photo failed to upload. Please try again.');
     } finally {
       setIsCapturing(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      setPendingCaptureFile(null);
     }
+  };
+
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    if (!file || !user) return;
+
+    if (groups.length <= 1) {
+      // Only one group to share to (or none, which performCapture will
+      // reject with a clear message) — skip the picker for the common case
+      await performCapture(file, user.uid, groups.map(g => g.id));
+      return;
+    }
+
+    // Multiple groups: let the user choose before uploading
+    setPendingCaptureFile(file);
+    setCaptureGroupIds(new Set(selectedGroupId ? [selectedGroupId] : []));
+  };
+
+  const handleConfirmCaptureGroups = () => {
+    if (!pendingCaptureFile || !user) return;
+    performCapture(pendingCaptureFile, user.uid, Array.from(captureGroupIds));
   };
 
   const handleSaveSettings = async (updates: Partial<AppUser['settings']>) => {
@@ -596,8 +726,9 @@ export default function App() {
     if (!window.confirm('Are you sure you want to delete your account, all your photos, and your comments and reactions? This cannot be undone.')) return;
 
     try {
-      // Deleting the profile cascades to photos, comments, and reactions
-      await api.deleteAccount(user.uid, photos.filter(p => p.userId === user.uid));
+      // Deleting the profile cascades to photos, comments, reactions, and
+      // group memberships across every group, not just the currently viewed one
+      await api.deleteAccount(user.uid);
       setShowSettings(false);
     } catch (err) {
       console.error('Failed to delete account:', err);
@@ -620,9 +751,11 @@ export default function App() {
     setMigrateStatus('Starting...');
     try {
       const summary = await api.migrateFromFirebase(setMigrateStatus, serviceRoleKey.trim());
-      // The import may have corrected this user's own name/timezone
+      // The import may have corrected this user's own name/timezone, and
+      // adds everyone to the legacy "Sibs and Sigs" group
       const refreshedProfile = await api.ensureProfile(Intl.DateTimeFormat().resolvedOptions().timeZone).catch(() => null);
       if (refreshedProfile) setProfile(refreshedProfile);
+      await refreshGroups();
       await refreshData();
       showToast(summary, 'success');
     } catch (err) {
@@ -646,6 +779,103 @@ export default function App() {
     } catch (err) {
       console.error('Failed to save name:', err);
       showToast('Failed to save your name. Please try again.');
+    }
+  };
+
+  const handleCreateGroup = async () => {
+    const name = newGroupName.trim();
+    if (!name) return;
+    try {
+      const group = await api.createGroup(name);
+      setNewGroupName('');
+      setShowCreateGroup(false);
+      await refreshGroups();
+      setSelectedGroupId(group.id);
+      showToast(`"${group.name}" created`, 'success');
+    } catch (err) {
+      console.error('Failed to create group:', err);
+      showToast('Failed to create group. Please try again.');
+    }
+  };
+
+  const handleRenameGroup = async () => {
+    if (!selectedGroup) return;
+    const name = manageGroupName.trim();
+    if (!name || name === selectedGroup.name) return;
+    try {
+      await api.renameGroup(selectedGroup.id, name);
+      await refreshGroups();
+      showToast('Group renamed', 'success');
+    } catch (err) {
+      console.error('Failed to rename group:', err);
+      showToast('Failed to rename group. Please try again.');
+    }
+  };
+
+  const handleCopyInviteLink = async () => {
+    if (!selectedGroup) return;
+    const url = `${window.location.origin}/?join=${selectedGroup.inviteCode}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast('Invite link copied', 'success');
+    } catch (err) {
+      console.error('Failed to copy invite link:', err);
+      showToast('Failed to copy link.');
+    }
+  };
+
+  const handleRegenerateInvite = async () => {
+    if (!selectedGroup) return;
+    if (!window.confirm('This invalidates the current invite link — anyone with the old link will no longer be able to join. Continue?')) return;
+    try {
+      await api.regenerateInviteCode(selectedGroup.id);
+      await refreshGroups();
+      showToast('New invite link generated', 'success');
+    } catch (err) {
+      console.error('Failed to regenerate invite code:', err);
+      showToast('Failed to regenerate invite link. Please try again.');
+    }
+  };
+
+  const handleRemoveMember = async (memberId: string) => {
+    if (!selectedGroup) return;
+    if (!window.confirm('Remove this person from the group? They will lose access to its photos.')) return;
+    try {
+      await api.removeGroupMember(selectedGroup.id, memberId);
+      setGroupMemberRoles(prev => prev.filter(m => m.profileId !== memberId));
+      await refreshData();
+      showToast('Member removed', 'success');
+    } catch (err) {
+      console.error('Failed to remove member:', err);
+      showToast('Failed to remove member. Please try again.');
+    }
+  };
+
+  const handleLeaveGroup = async () => {
+    if (!selectedGroup || !user) return;
+    if (!window.confirm(`Leave "${selectedGroup.name}"? You'll lose access to its photos.`)) return;
+    try {
+      await api.removeGroupMember(selectedGroup.id, user.uid);
+      setShowSettings(false);
+      await refreshGroups();
+      showToast('Left group', 'success');
+    } catch (err) {
+      console.error('Failed to leave group:', err);
+      showToast('Failed to leave group. Please try again.');
+    }
+  };
+
+  const handleDeleteGroup = async () => {
+    if (!selectedGroup) return;
+    if (!window.confirm(`Permanently delete "${selectedGroup.name}" and all its shared photos? This cannot be undone for any member.`)) return;
+    try {
+      await api.deleteGroup(selectedGroup.id);
+      setShowSettings(false);
+      await refreshGroups();
+      showToast('Group deleted', 'success');
+    } catch (err) {
+      console.error('Failed to delete group:', err);
+      showToast('Failed to delete group. Please try again.');
     }
   };
 
@@ -804,6 +1034,9 @@ export default function App() {
           <div>
             <h1 className="text-4xl md:text-6xl tracking-tight leading-none mb-4 italic">The Hourly</h1>
             <p className="font-sans text-xs md:text-sm uppercase tracking-[0.2em] opacity-60">A Synchronized Visual Journal</p>
+            {hasPendingInvite && (
+              <p className="font-sans text-[10px] uppercase tracking-[0.2em] text-[#C5A059] mt-3">You've been invited — sign in to join</p>
+            )}
           </div>
           {magicLinkSent ? (
             <div className="space-y-3">
@@ -893,6 +1126,29 @@ export default function App() {
         <div>
           <h1 className="text-4xl md:text-5xl tracking-tight leading-none mb-2 italic print:text-5xl print:mb-4">The Hourly</h1>
           <p className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-60 print:text-[12px] print:opacity-80">A Synchronized Visual Journal</p>
+          {groupsLoaded && groups.length > 0 && (
+            <div className="flex items-center gap-2 mt-3 flex-wrap print:hidden">
+              {groups.map(g => (
+                <button
+                  key={g.id}
+                  onClick={() => setSelectedGroupId(g.id)}
+                  className={`font-sans text-[10px] uppercase tracking-widest px-3 py-1.5 border-[0.5px] transition-colors ${
+                    g.id === selectedGroupId
+                      ? 'bg-[#1A1A1A] text-[#F9F8F5] border-[#1A1A1A]'
+                      : 'border-[#1A1A1A] border-opacity-30 opacity-60 hover:opacity-100'
+                  }`}
+                >
+                  {g.name}
+                </button>
+              ))}
+              <button
+                onClick={() => setShowCreateGroup(true)}
+                className="font-sans text-[10px] uppercase tracking-widest px-3 py-1.5 border-[0.5px] border-dashed border-[#1A1A1A] border-opacity-30 opacity-50 hover:opacity-100 transition-opacity"
+              >
+                + New Group
+              </button>
+            </div>
+          )}
         </div>
         <div className="text-left md:text-right">
           <div className="text-2xl font-light print:text-black flex items-center md:justify-end gap-3">
@@ -926,6 +1182,19 @@ export default function App() {
 
       {/* Main Matrix View */}
       <main className="flex-grow overflow-auto relative print:overflow-visible">
+        {groupsLoaded && groups.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-center px-4">
+            <ImageIcon size={48} strokeWidth={1} className="mb-4 opacity-60" />
+            <p className="font-serif text-2xl italic mb-2">You're not in a group yet</p>
+            <p className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-50 mb-6">Create one, or ask someone to send you an invite link</p>
+            <button
+              onClick={() => setShowCreateGroup(true)}
+              className="border-[0.5px] border-[#1A1A1A] px-6 py-3 hover:bg-[#1A1A1A] hover:text-[#F9F8F5] transition-colors font-sans text-[10px] uppercase tracking-widest cursor-pointer"
+            >
+              Create a Group
+            </button>
+          </div>
+        ) : (
         <div ref={collageRef} className="min-w-[600px] md:min-w-0 max-w-4xl mx-auto px-4 md:px-10 pb-24 w-full print:px-0 print:pb-0">
           {/* Column Headers (X-Axis: Names) */}
           <div className="sticky top-0 z-20 bg-[#F9F8F5] pt-6 grid gap-4 mb-4 border-b-[0.5px] border-[#1A1A1A] pb-2 print:relative print:bg-white print:border-black print:pt-4" style={gridStyle}>
@@ -1051,10 +1320,11 @@ export default function App() {
             }))}
           </div>
         </div>
+        )}
       </main>
 
       {/* Floating Action Button */}
-      {user && !hasPostedThisHour && (
+      {user && !hasPostedThisHour && groups.length > 0 && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 print:hidden">
           <input 
             type="file" 
@@ -1370,6 +1640,83 @@ export default function App() {
         </div>
       )}
 
+      {/* Capture: choose which group(s) to share to */}
+      {pendingCaptureFile && (
+        <div className="fixed inset-0 z-[250] bg-black/40 flex items-center justify-center p-4">
+          <div className="bg-[#F9F8F5] p-6 md:p-8 w-full max-w-sm shadow-2xl border-[0.5px] border-[#1A1A1A] animate-in fade-in zoom-in-95 duration-200">
+            <h2 className="font-serif text-xl italic mb-1">Share to</h2>
+            <p className="font-sans text-[10px] uppercase tracking-widest opacity-50 mb-6">Choose which group(s) see this moment</p>
+            <div className="flex flex-col gap-3 mb-8">
+              {groups.map(g => (
+                <label key={g.id} className="flex items-center gap-3 cursor-pointer font-sans text-sm">
+                  <input
+                    type="checkbox"
+                    checked={captureGroupIds.has(g.id)}
+                    onChange={(e) => {
+                      setCaptureGroupIds(prev => {
+                        const next = new Set(prev);
+                        if (e.target.checked) next.add(g.id); else next.delete(g.id);
+                        return next;
+                      });
+                    }}
+                  />
+                  {g.name}
+                </label>
+              ))}
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setPendingCaptureFile(null)}
+                disabled={isCapturing}
+                className="flex-1 border-[0.5px] border-[#1A1A1A] py-2 font-sans text-[10px] uppercase tracking-widest opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmCaptureGroups}
+                disabled={captureGroupIds.size === 0 || isCapturing}
+                className="flex-1 bg-[#1A1A1A] text-[#F9F8F5] py-2 font-sans text-[10px] uppercase tracking-widest hover:bg-black transition-colors disabled:opacity-40"
+              >
+                {isCapturing ? 'Sharing...' : 'Share'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Group */}
+      {showCreateGroup && (
+        <div className="fixed inset-0 z-[250] bg-black/40 flex items-center justify-center p-4">
+          <div className="bg-[#F9F8F5] p-6 md:p-8 w-full max-w-sm shadow-2xl border-[0.5px] border-[#1A1A1A] animate-in fade-in zoom-in-95 duration-200">
+            <h2 className="font-serif text-xl italic mb-6">New Group</h2>
+            <input
+              type="text"
+              value={newGroupName}
+              onChange={(e) => setNewGroupName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleCreateGroup(); }}
+              placeholder="e.g. Friends"
+              autoFocus
+              className="w-full bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-sm outline-none mb-8 placeholder:opacity-30"
+            />
+            <div className="flex gap-3">
+              <button
+                onClick={() => { setShowCreateGroup(false); setNewGroupName(''); }}
+                className="flex-1 border-[0.5px] border-[#1A1A1A] py-2 font-sans text-[10px] uppercase tracking-widest opacity-60 hover:opacity-100 transition-opacity"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateGroup}
+                disabled={!newGroupName.trim()}
+                className="flex-1 bg-[#1A1A1A] text-[#F9F8F5] py-2 font-sans text-[10px] uppercase tracking-widest hover:bg-black transition-colors disabled:opacity-40"
+              >
+                Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Settings Modal */}
       {showSettings && user && (
         <div className="fixed inset-0 z-[200] bg-black/40 flex items-center justify-center p-4">
@@ -1486,6 +1833,64 @@ export default function App() {
                   </select>
                 </div>
               </div>
+
+              {selectedGroup && (
+                <div className="flex flex-col gap-4 pt-6 border-t-[0.5px] border-[#1A1A1A]">
+                  <label className="font-sans text-[10px] uppercase tracking-widest opacity-60">Group</label>
+
+                  {isGroupOwner ? (
+                    <input
+                      type="text"
+                      value={manageGroupName}
+                      onChange={(e) => setManageGroupName(e.target.value)}
+                      onBlur={handleRenameGroup}
+                      className="bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors"
+                    />
+                  ) : (
+                    <p className="font-sans text-sm">{selectedGroup.name}</p>
+                  )}
+
+                  <button onClick={handleCopyInviteLink} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity w-fit">
+                    <Share size={14} />
+                    <span>Copy Invite Link</span>
+                  </button>
+
+                  {isGroupOwner && (
+                    <button onClick={handleRegenerateInvite} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity w-fit">
+                      <RefreshCw size={14} />
+                      <span>Generate New Invite Link</span>
+                    </button>
+                  )}
+
+                  <div className="flex flex-col gap-1">
+                    {groupMemberRoles.map(m => (
+                      <div key={m.profileId} className="flex items-center justify-between font-sans text-sm py-1">
+                        <span>
+                          {users[m.profileId]?.name || 'Unknown'}
+                          {m.role === 'owner' && <span className="opacity-40 text-[10px] uppercase ml-2">Owner</span>}
+                        </span>
+                        {isGroupOwner && m.profileId !== user.uid && (
+                          <button onClick={() => handleRemoveMember(m.profileId)} className="text-red-600 opacity-60 hover:opacity-100 transition-opacity" aria-label="Remove member">
+                            <X size={14} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {isGroupOwner ? (
+                    <button onClick={handleDeleteGroup} className="flex items-center gap-2 text-sm text-red-600 opacity-80 hover:opacity-100 transition-colors w-fit">
+                      <Trash2 size={14} />
+                      <span>Delete Group</span>
+                    </button>
+                  ) : (
+                    <button onClick={handleLeaveGroup} className="flex items-center gap-2 text-sm text-red-600 opacity-80 hover:opacity-100 transition-colors w-fit">
+                      <LogOut size={14} />
+                      <span>Leave Group</span>
+                    </button>
+                  )}
+                </div>
+              )}
 
               <div className="pt-6 border-t-[0.5px] border-[#1A1A1A] flex flex-col gap-4">
                 <div className="flex flex-col gap-3">

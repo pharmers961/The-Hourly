@@ -41,8 +41,15 @@ export interface Photo {
 }
 
 export interface TimeSlot {
-  hourKey: string; 
-  displayTime: string; 
+  hourKey: string;
+  displayTime: string;
   displayDate: string;
   photos: Record<string, Photo>; // Map of userId -> Photo
+}
+
+export interface Group {
+  id: string;
+  name: string;
+  role: 'owner' | 'member';
+  inviteCode: string;
 }

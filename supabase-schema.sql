@@ -20,6 +20,24 @@ create table if not exists public.profiles (
   created_at timestamptz not null default now()
 );
 
+-- A private circle (e.g. "Family", "Friends"). Photos are shared into one or
+-- more groups; members only ever see groups they belong to.
+create table if not exists public.groups (
+  id uuid primary key default gen_random_uuid(),
+  name text not null check (char_length(name) <= 60),
+  invite_code text unique not null,
+  created_by uuid references public.profiles(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.group_members (
+  group_id uuid not null references public.groups(id) on delete cascade,
+  profile_id uuid not null references public.profiles(id) on delete cascade,
+  role text not null default 'member' check (role in ('owner', 'member')),
+  joined_at timestamptz not null default now(),
+  primary key (group_id, profile_id)
+);
+
 create table if not exists public.photos (
   id uuid primary key default gen_random_uuid(),
   profile_id uuid not null references public.profiles(id) on delete cascade,
@@ -28,6 +46,15 @@ create table if not exists public.photos (
   metadata jsonb,
   firebase_id text unique,
   created_at timestamptz not null default now()
+);
+
+-- Which group(s) a photo has been shared into. A photo is captured once and
+-- can be shared into any number of groups the uploader belongs to.
+create table if not exists public.photo_groups (
+  photo_id uuid not null references public.photos(id) on delete cascade,
+  group_id uuid not null references public.groups(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (photo_id, group_id)
 );
 
 create table if not exists public.comments (
@@ -68,6 +95,8 @@ create index if not exists photos_taken_at_idx on public.photos (taken_at desc);
 create index if not exists comments_photo_idx on public.comments (photo_id);
 create index if not exists nudges_to_idx on public.nudges (to_profile_id);
 create index if not exists notifications_to_idx on public.notifications (to_profile_id);
+create index if not exists group_members_profile_idx on public.group_members (profile_id);
+create index if not exists photo_groups_group_idx on public.photo_groups (group_id);
 
 -- ---------------------------------------------------------------------------
 -- Helper functions
@@ -134,12 +163,122 @@ begin
 end;
 $$;
 
+create or replace function public.generate_invite_code()
+returns text
+language sql volatile
+as $$
+  select translate(encode(gen_random_bytes(9), 'base64'), '+/=', 'xyz')
+$$;
+
+create or replace function public.is_group_member(p_group_id uuid)
+returns boolean
+language sql stable security definer set search_path = public
+as $$
+  select exists (
+    select 1 from public.group_members
+    where group_id = p_group_id and profile_id = public.my_profile_id()
+  )
+$$;
+
+-- A photo is visible to its uploader, or to anyone in a group it's been
+-- shared into.
+create or replace function public.can_view_photo(p_photo_id uuid)
+returns boolean
+language sql stable security definer set search_path = public
+as $$
+  select exists (
+    select 1 from public.photos ph
+    where ph.id = p_photo_id and ph.profile_id = public.my_profile_id()
+  ) or exists (
+    select 1 from public.photo_groups pg
+    where pg.photo_id = p_photo_id and public.is_group_member(pg.group_id)
+  )
+$$;
+
+-- Creates a new group and makes the caller its owner, atomically.
+create or replace function public.create_group(p_name text)
+returns public.groups
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_group public.groups;
+  v_profile_id uuid := public.my_profile_id();
+begin
+  if v_profile_id is null then
+    raise exception 'not authenticated';
+  end if;
+  if coalesce(btrim(p_name), '') = '' then
+    raise exception 'group name required';
+  end if;
+
+  insert into groups (name, invite_code, created_by)
+  values (btrim(p_name), public.generate_invite_code(), v_profile_id)
+  returning * into v_group;
+
+  insert into group_members (group_id, profile_id, role)
+  values (v_group.id, v_profile_id, 'owner');
+
+  return v_group;
+end;
+$$;
+
+-- Joins the caller to the group matching an invite code. Auto-joins with no
+-- approval step; safe to call again (no-op if already a member).
+create or replace function public.join_group_by_code(p_code text)
+returns public.groups
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_group public.groups;
+  v_profile_id uuid := public.my_profile_id();
+begin
+  if v_profile_id is null then
+    raise exception 'not authenticated';
+  end if;
+
+  select * into v_group from groups where invite_code = btrim(p_code);
+  if not found then
+    raise exception 'That invite link is invalid or has expired.';
+  end if;
+
+  insert into group_members (group_id, profile_id, role)
+  values (v_group.id, v_profile_id, 'member')
+  on conflict (group_id, profile_id) do nothing;
+
+  return v_group;
+end;
+$$;
+
+-- Owner-only: invalidates the old invite link and returns a fresh code.
+create or replace function public.regenerate_invite_code(p_group_id uuid)
+returns text
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_code text;
+begin
+  if not exists (
+    select 1 from group_members
+    where group_id = p_group_id and profile_id = public.my_profile_id() and role = 'owner'
+  ) then
+    raise exception 'Only the group owner can do this.';
+  end if;
+
+  v_code := public.generate_invite_code();
+  update groups set invite_code = v_code where id = p_group_id;
+  return v_code;
+end;
+$$;
+
 -- ---------------------------------------------------------------------------
 -- Row-level security
 -- ---------------------------------------------------------------------------
 
 alter table public.profiles enable row level security;
+alter table public.groups enable row level security;
+alter table public.group_members enable row level security;
 alter table public.photos enable row level security;
+alter table public.photo_groups enable row level security;
 alter table public.comments enable row level security;
 alter table public.reactions enable row level security;
 alter table public.nudges enable row level security;
@@ -163,35 +302,81 @@ drop policy if exists "profiles delete own" on public.profiles;
 create policy "profiles delete own" on public.profiles
   for delete to authenticated using (auth_id = auth.uid());
 
+-- Groups: creation/joining always goes through the security-definer RPCs
+-- above, so there are no direct insert policies here.
+drop policy if exists "groups read" on public.groups;
+create policy "groups read" on public.groups
+  for select to authenticated using (public.is_group_member(id));
+
+drop policy if exists "groups update owner" on public.groups;
+create policy "groups update owner" on public.groups
+  for update to authenticated using (
+    exists (select 1 from group_members gm where gm.group_id = id and gm.profile_id = public.my_profile_id() and gm.role = 'owner')
+  );
+
+drop policy if exists "groups delete owner" on public.groups;
+create policy "groups delete owner" on public.groups
+  for delete to authenticated using (
+    exists (select 1 from group_members gm where gm.group_id = id and gm.profile_id = public.my_profile_id() and gm.role = 'owner')
+  );
+
+drop policy if exists "group_members read" on public.group_members;
+create policy "group_members read" on public.group_members
+  for select to authenticated using (public.is_group_member(group_id));
+
+drop policy if exists "group_members delete" on public.group_members;
+create policy "group_members delete" on public.group_members
+  for delete to authenticated using (
+    profile_id = public.my_profile_id() -- leave a group yourself
+    or exists ( -- or the group owner removing someone
+      select 1 from group_members gm2
+      where gm2.group_id = group_members.group_id
+        and gm2.profile_id = public.my_profile_id()
+        and gm2.role = 'owner'
+    )
+  );
+
 drop policy if exists "photos read" on public.photos;
 create policy "photos read" on public.photos
-  for select to authenticated using (true);
+  for select to authenticated using (public.can_view_photo(id));
 
 drop policy if exists "photos insert" on public.photos;
 create policy "photos insert" on public.photos
   for insert to authenticated
-  with check (
-    profile_id = public.my_profile_id()
-    or (firebase_id is not null and exists (
-      select 1 from public.profiles p where p.id = profile_id and p.auth_id is null
-    )) -- the Firebase import writes other members' old photos to unclaimed placeholders
-  );
+  with check (profile_id = public.my_profile_id());
 
 drop policy if exists "photos delete own" on public.photos;
 create policy "photos delete own" on public.photos
   for delete to authenticated using (profile_id = public.my_profile_id());
 
+drop policy if exists "photo_groups read" on public.photo_groups;
+create policy "photo_groups read" on public.photo_groups
+  for select to authenticated using (
+    public.is_group_member(group_id)
+    or exists (select 1 from photos ph where ph.id = photo_id and ph.profile_id = public.my_profile_id())
+  );
+
+drop policy if exists "photo_groups insert" on public.photo_groups;
+create policy "photo_groups insert" on public.photo_groups
+  for insert to authenticated with check (
+    public.is_group_member(group_id)
+    and exists (select 1 from photos ph where ph.id = photo_id and ph.profile_id = public.my_profile_id())
+  );
+
+drop policy if exists "photo_groups delete" on public.photo_groups;
+create policy "photo_groups delete" on public.photo_groups
+  for delete to authenticated using (
+    exists (select 1 from photos ph where ph.id = photo_id and ph.profile_id = public.my_profile_id())
+  );
+
 drop policy if exists "comments read" on public.comments;
 create policy "comments read" on public.comments
-  for select to authenticated using (true);
+  for select to authenticated using (public.can_view_photo(photo_id));
 
 drop policy if exists "comments insert" on public.comments;
 create policy "comments insert" on public.comments
   for insert to authenticated
-  with check (
-    profile_id = public.my_profile_id()
-    or exists (select 1 from public.photos ph where ph.id = photo_id and ph.firebase_id is not null)
-  );
+  with check (profile_id = public.my_profile_id() and public.can_view_photo(photo_id));
 
 drop policy if exists "comments delete own" on public.comments;
 create policy "comments delete own" on public.comments
@@ -199,15 +384,12 @@ create policy "comments delete own" on public.comments
 
 drop policy if exists "reactions read" on public.reactions;
 create policy "reactions read" on public.reactions
-  for select to authenticated using (true);
+  for select to authenticated using (public.can_view_photo(photo_id));
 
 drop policy if exists "reactions insert" on public.reactions;
 create policy "reactions insert" on public.reactions
   for insert to authenticated
-  with check (
-    profile_id = public.my_profile_id()
-    or exists (select 1 from public.photos ph where ph.id = photo_id and ph.firebase_id is not null)
-  );
+  with check (profile_id = public.my_profile_id() and public.can_view_photo(photo_id));
 
 drop policy if exists "reactions delete own" on public.reactions;
 create policy "reactions delete own" on public.reactions
@@ -238,6 +420,38 @@ create policy "notifications delete own" on public.notifications
   for delete to authenticated using (to_profile_id = public.my_profile_id());
 
 -- ---------------------------------------------------------------------------
+-- One-time: migrate pre-groups data into a single "Sibs and Sigs" group so
+-- nothing already shared disappears. Uses a fixed id so it's safe to re-run.
+-- ---------------------------------------------------------------------------
+
+do $$
+declare
+  v_group_id uuid := '11111111-1111-1111-1111-111111111111';
+  v_owner_id uuid;
+begin
+  if not exists (select 1 from groups where id = v_group_id) then
+    select id into v_owner_id from profiles where lower(email) = 'akram.aboukhalil@gmail.com' limit 1;
+    if v_owner_id is null then
+      select id into v_owner_id from profiles order by created_at asc limit 1;
+    end if;
+
+    if v_owner_id is not null then
+      insert into groups (id, name, invite_code, created_by)
+      values (v_group_id, 'Sibs and Sigs', generate_invite_code(), v_owner_id);
+
+      insert into group_members (group_id, profile_id, role)
+      select v_group_id, id, case when id = v_owner_id then 'owner' else 'member' end
+      from profiles
+      on conflict (group_id, profile_id) do nothing;
+
+      insert into photo_groups (photo_id, group_id)
+      select id, v_group_id from photos
+      on conflict (photo_id, group_id) do nothing;
+    end if;
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
 -- Storage: photo files
 -- ---------------------------------------------------------------------------
 
@@ -258,14 +472,22 @@ end $$;
 do $$
 begin
   drop policy if exists "photo uploads" on storage.objects;
+  drop policy if exists "photo uploads v2" on storage.objects;
+  drop policy if exists "photos upload 1io9m69_0" on storage.objects;
+
+  -- Note: this project's Storage service does not reliably recognize the
+  -- 'authenticated' role for the anon/publishable API key (see project
+  -- history) so uploads are allowed for both roles. Real access control
+  -- lives on the `photos`/`photo_groups` tables above: an orphan file in
+  -- storage with no visible database row is never shown by the app.
   create policy "photo uploads" on storage.objects
-    for insert to authenticated with check (bucket_id = 'photos');
+    for insert to authenticated, anon with check (bucket_id = 'photos');
 
   drop policy if exists "photo delete own" on storage.objects;
   create policy "photo delete own" on storage.objects
     for delete to authenticated using (bucket_id = 'photos' and owner = auth.uid());
 exception when others then
-  raise notice 'Could not create storage policies via SQL (%). In the dashboard: Storage -> photos bucket -> Policies -> New policy -> allow INSERT for authenticated users.', sqlerrm;
+  raise notice 'Could not create storage policies via SQL (%). In the dashboard: Storage -> photos bucket -> Policies -> New policy -> allow INSERT for authenticated + anon users.', sqlerrm;
 end $$;
 
 -- ---------------------------------------------------------------------------
@@ -300,5 +522,20 @@ end $$;
 do $$
 begin
   alter publication supabase_realtime add table public.notifications;
+exception when duplicate_object then null;
+end $$;
+do $$
+begin
+  alter publication supabase_realtime add table public.groups;
+exception when duplicate_object then null;
+end $$;
+do $$
+begin
+  alter publication supabase_realtime add table public.group_members;
+exception when duplicate_object then null;
+end $$;
+do $$
+begin
+  alter publication supabase_realtime add table public.photo_groups;
 exception when duplicate_object then null;
 end $$;

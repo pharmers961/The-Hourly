@@ -1,7 +1,7 @@
 // Supabase data layer for The Hourly. All reads map database rows into the
 // app's existing Photo/User shapes so the UI is agnostic of the backend.
 import { supabase, createAdminClient } from './supabase';
-import { Photo, User as AppUser, PhotoMetadata, UserSettings } from './types';
+import { Photo, User as AppUser, PhotoMetadata, UserSettings, Group } from './types';
 
 interface ProfileRow {
   id: string;
@@ -20,6 +20,7 @@ interface CommentRow {
   profile_id: string;
   text: string;
   created_at: string;
+  profiles: { name: string } | null; // embedded so it resolves even if the commenter isn't in the currently viewed group
 }
 
 interface ReactionRow {
@@ -37,6 +38,12 @@ interface PhotoRow {
   firebase_id: string | null;
   comments: CommentRow[];
   reactions: ReactionRow[];
+}
+
+interface GroupRow {
+  id: string;
+  name: string;
+  invite_code: string;
 }
 
 // Supabase error objects carry more than .message (status, code, hint) but
@@ -58,6 +65,41 @@ function describeError(prefix: string, err: unknown): Error {
   return new Error(`${prefix}: ${String(err)}`);
 }
 
+function mapProfileRow(row: ProfileRow): AppUser {
+  return {
+    id: row.id,
+    name: row.name || 'Unknown',
+    timezone: row.timezone || 'UTC',
+    lastActive: row.last_active || undefined,
+    settings: row.settings && Object.keys(row.settings).length > 0 ? (row.settings as UserSettings) : undefined,
+  };
+}
+
+function mapPhotoRow(ph: PhotoRow): Photo {
+  const reactions: Record<string, string[]> = {};
+  ph.reactions.forEach(r => {
+    (reactions[r.emoji] ||= []).push(r.profile_id);
+  });
+  return {
+    id: ph.id,
+    userId: ph.profile_id,
+    timestamp: ph.taken_at,
+    imageUrl: publicPhotoUrl(ph.image_path),
+    imagePath: ph.image_path,
+    metadata: ph.metadata || undefined,
+    comments: ph.comments
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+      .map(c => ({
+        id: c.id,
+        userId: c.profile_id,
+        userName: c.profiles?.name.split(' ')[0] || 'Unknown',
+        text: c.text,
+        timestamp: c.created_at,
+      })),
+    reactions: Object.keys(reactions).length > 0 ? reactions : undefined,
+  };
+}
+
 export interface AppData {
   profiles: Record<string, AppUser>;
   photos: Photo[];
@@ -67,65 +109,15 @@ export function publicPhotoUrl(imagePath: string): string {
   return supabase.storage.from('photos').getPublicUrl(imagePath).data.publicUrl;
 }
 
-export async function fetchAllData(): Promise<AppData> {
-  const [profilesRes, photosRes] = await Promise.all([
-    supabase.from('profiles').select('*'),
-    supabase.from('photos').select('*, comments(*), reactions(*)').order('taken_at', { ascending: true }),
-  ]);
-  if (profilesRes.error) throw profilesRes.error;
-  if (photosRes.error) throw photosRes.error;
-
-  const profiles: Record<string, AppUser> = {};
-  (profilesRes.data as ProfileRow[]).forEach(row => {
-    profiles[row.id] = {
-      id: row.id,
-      name: row.name || 'Unknown',
-      timezone: row.timezone || 'UTC',
-      lastActive: row.last_active || undefined,
-      settings: row.settings && Object.keys(row.settings).length > 0 ? (row.settings as UserSettings) : undefined,
-    };
-  });
-
-  const photos: Photo[] = (photosRes.data as PhotoRow[]).map(row => {
-    const reactions: Record<string, string[]> = {};
-    row.reactions.forEach(r => {
-      (reactions[r.emoji] ||= []).push(r.profile_id);
-    });
-    return {
-      id: row.id,
-      userId: row.profile_id,
-      timestamp: row.taken_at,
-      imageUrl: publicPhotoUrl(row.image_path),
-      imagePath: row.image_path,
-      metadata: row.metadata || undefined,
-      comments: row.comments
-        .sort((a, b) => a.created_at.localeCompare(b.created_at))
-        .map(c => ({
-          id: c.id,
-          userId: c.profile_id,
-          userName: profiles[c.profile_id]?.name.split(' ')[0] || 'Unknown',
-          text: c.text,
-          timestamp: c.created_at,
-        })),
-      reactions: Object.keys(reactions).length > 0 ? reactions : undefined,
-    };
-  });
-
-  return { profiles, photos };
-}
+// ---------------------------------------------------------------------------
+// Auth / profile
+// ---------------------------------------------------------------------------
 
 export async function ensureProfile(timezone: string, name?: string): Promise<AppUser & { email: string }> {
   const { data, error } = await supabase.rpc('ensure_profile', { p_timezone: timezone, p_name: name || null });
   if (error) throw error;
   const row = data as ProfileRow;
-  return {
-    id: row.id,
-    name: row.name,
-    timezone: row.timezone,
-    lastActive: row.last_active || undefined,
-    settings: row.settings && Object.keys(row.settings).length > 0 ? (row.settings as UserSettings) : undefined,
-    email: row.email,
-  };
+  return { ...mapProfileRow(row), email: row.email };
 }
 
 export async function sendMagicLink(email: string): Promise<void> {
@@ -160,19 +152,131 @@ export async function saveProfileName(profileId: string, name: string): Promise<
   if (error) throw error;
 }
 
-export async function uploadPhoto(profileId: string, imageBlob: Blob, metadata: PhotoMetadata): Promise<void> {
+// ---------------------------------------------------------------------------
+// Groups
+// ---------------------------------------------------------------------------
+
+interface GroupMembershipRow {
+  role: 'owner' | 'member';
+  groups: GroupRow | null;
+}
+
+export async function fetchMyGroups(profileId: string): Promise<Group[]> {
+  const { data, error } = await supabase
+    .from('group_members')
+    .select('role, groups(id, name, invite_code)')
+    .eq('profile_id', profileId);
+  if (error) throw error;
+  return (data as unknown as GroupMembershipRow[])
+    .filter(row => row.groups)
+    .map(row => ({ id: row.groups!.id, name: row.groups!.name, inviteCode: row.groups!.invite_code, role: row.role }));
+}
+
+export async function createGroup(name: string): Promise<Group> {
+  const { data, error } = await supabase.rpc('create_group', { p_name: name });
+  if (error) throw error;
+  const row = data as GroupRow;
+  return { id: row.id, name: row.name, inviteCode: row.invite_code, role: 'owner' };
+}
+
+export async function joinGroupByCode(code: string): Promise<Group> {
+  const { data, error } = await supabase.rpc('join_group_by_code', { p_code: code });
+  if (error) throw error;
+  const row = data as GroupRow;
+  return { id: row.id, name: row.name, inviteCode: row.invite_code, role: 'member' };
+}
+
+export async function renameGroup(groupId: string, name: string): Promise<void> {
+  const { error } = await supabase.from('groups').update({ name }).eq('id', groupId);
+  if (error) throw error;
+}
+
+export async function regenerateInviteCode(groupId: string): Promise<string> {
+  const { data, error } = await supabase.rpc('regenerate_invite_code', { p_group_id: groupId });
+  if (error) throw error;
+  return data as string;
+}
+
+// Used both to leave a group yourself and, if you're the owner, to remove
+// someone else — the security policy decides which is allowed.
+export async function removeGroupMember(groupId: string, profileId: string): Promise<void> {
+  const { error } = await supabase.from('group_members').delete().eq('group_id', groupId).eq('profile_id', profileId);
+  if (error) throw error;
+}
+
+export async function deleteGroup(groupId: string): Promise<void> {
+  const { error } = await supabase.from('groups').delete().eq('id', groupId);
+  if (error) throw error;
+}
+
+export async function fetchGroupMemberRoles(groupId: string): Promise<{ profileId: string; role: 'owner' | 'member' }[]> {
+  const { data, error } = await supabase.from('group_members').select('profile_id, role').eq('group_id', groupId);
+  if (error) throw error;
+  return (data || []).map(r => ({ profileId: r.profile_id as string, role: r.role as 'owner' | 'member' }));
+}
+
+// Cheap, indexed check independent of any group's photo list — used to
+// decide whether the capture button should be enabled this hour, which is a
+// global (not per-group) state: one capture, shared to chosen groups.
+export async function hasCapturedThisHour(profileId: string, hourStartIso: string): Promise<boolean> {
+  const { data, error } = await supabase.from('photos').select('id').eq('profile_id', profileId).gte('taken_at', hourStartIso).limit(1);
+  if (error) throw error;
+  return (data || []).length > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Photos, comments, reactions (scoped to one group at a time)
+// ---------------------------------------------------------------------------
+
+interface GroupMemberProfileRow {
+  profiles: ProfileRow | null;
+}
+
+interface PhotoGroupRow {
+  photos: PhotoRow | null;
+}
+
+export async function fetchGroupData(groupId: string): Promise<AppData> {
+  const [membersRes, photoLinksRes] = await Promise.all([
+    supabase.from('group_members').select('profiles(*)').eq('group_id', groupId),
+    supabase.from('photo_groups').select('photos(*, comments(*, profiles(name)), reactions(*))').eq('group_id', groupId),
+  ]);
+  if (membersRes.error) throw membersRes.error;
+  if (photoLinksRes.error) throw photoLinksRes.error;
+
+  const profiles: Record<string, AppUser> = {};
+  (membersRes.data as unknown as GroupMemberProfileRow[]).forEach(row => {
+    if (row.profiles) profiles[row.profiles.id] = mapProfileRow(row.profiles);
+  });
+
+  const photos: Photo[] = (photoLinksRes.data as unknown as PhotoGroupRow[])
+    .filter(row => row.photos)
+    .map(row => mapPhotoRow(row.photos!))
+    .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+
+  return { profiles, photos };
+}
+
+export async function uploadPhotoToGroups(profileId: string, imageBlob: Blob, metadata: PhotoMetadata, groupIds: string[]): Promise<void> {
+  if (groupIds.length === 0) throw new Error('Select at least one group to share this to.');
+
   const path = `${profileId}/${crypto.randomUUID()}.jpg`;
   const { error: uploadError } = await supabase.storage.from('photos').upload(path, imageBlob, {
     contentType: 'image/jpeg',
   });
-  if (uploadError) throw uploadError;
-  const { error } = await supabase.from('photos').insert({
-    profile_id: profileId,
-    taken_at: new Date().toISOString(),
-    image_path: path,
-    metadata,
-  });
-  if (error) throw error;
+  if (uploadError) throw describeError('storage upload failed', uploadError);
+
+  const { data: photoRow, error: insertError } = await supabase
+    .from('photos')
+    .insert({ profile_id: profileId, taken_at: new Date().toISOString(), image_path: path, metadata })
+    .select('id')
+    .single();
+  if (insertError) throw describeError('photo insert failed', insertError);
+
+  const { error: linkError } = await supabase
+    .from('photo_groups')
+    .insert(groupIds.map(group_id => ({ photo_id: photoRow.id, group_id })));
+  if (linkError) throw describeError('sharing to group failed', linkError);
 }
 
 export async function addComment(photoId: string, profileId: string, text: string): Promise<void> {
@@ -217,15 +321,25 @@ export async function sendNotifications(
   if (error) throw error;
 }
 
-export async function deleteAccount(profileId: string, myPhotos: Photo[]): Promise<void> {
-  // Best-effort removal of image files (storage ownership may block files
-  // uploaded by the migration; orphaned files are harmless)
-  const paths = myPhotos.map(p => p.imagePath).filter((p): p is string => !!p);
-  if (paths.length > 0) {
-    await supabase.storage.from('photos').remove(paths).then(() => undefined, () => undefined);
+export async function deleteAccount(profileId: string): Promise<void> {
+  // Best-effort removal of image files, fetched fresh (not from whatever
+  // group happens to be selected in the UI) so cleanup covers every group.
+  // Storage ownership may block files uploaded by the migration; orphaned
+  // files are harmless either way.
+  try {
+    const { data } = await supabase.from('photos').select('image_path').eq('profile_id', profileId);
+    const paths = (data || []).map(r => r.image_path as string).filter(Boolean);
+    if (paths.length > 0) {
+      await supabase.storage.from('photos').remove(paths).then(() => undefined, () => undefined);
+    }
+  } catch (err) {
+    console.warn('Failed to list photos for cleanup:', err);
   }
   // Deleting the profile cascades to photos, comments, reactions, nudges,
-  // and notifications
+  // notifications, and group memberships. Note: if this profile was the sole
+  // owner of a group with other members, that group is left ownerless (no
+  // one can rename it, regenerate its invite link, or delete it) — a rare
+  // edge case not handled automatically.
   const { error } = await supabase.from('profiles').delete().eq('id', profileId);
   if (error) throw error;
   await supabase.auth.signOut();
@@ -233,6 +347,7 @@ export async function deleteAccount(profileId: string, myPhotos: Photo[]): Promi
 
 export interface RealtimeHandlers {
   onDataChange: () => void;
+  onGroupsChange: () => void;
   onNudge: (fromProfileId: string) => void;
   onNotification: (n: { from_name: string; text: string | null; type: string }) => void;
 }
@@ -241,9 +356,12 @@ export function subscribeRealtime(profileId: string, handlers: RealtimeHandlers)
   const channel = supabase
     .channel('the-hourly')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'photos' }, handlers.onDataChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'photo_groups' }, handlers.onDataChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'comments' }, handlers.onDataChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'reactions' }, handlers.onDataChange)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, handlers.onDataChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'groups' }, handlers.onGroupsChange)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'group_members' }, handlers.onGroupsChange)
     .on(
       'postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'nudges', filter: `to_profile_id=eq.${profileId}` },
@@ -272,6 +390,12 @@ export function subscribeRealtime(profileId: string, handlers: RealtimeHandlers)
 // ---------------------------------------------------------------------------
 // One-time Firebase -> Supabase import
 // ---------------------------------------------------------------------------
+
+// Fixed id of the group the pre-groups schema migration created to hold
+// everyone's existing data (see supabase-schema.sql); newly-imported photos
+// are shared into the same group so they stay visible under the same rules
+// as everything else.
+const LEGACY_GROUP_ID = '11111111-1111-1111-1111-111111111111';
 
 export async function migrateFromFirebase(onProgress: (message: string) => void, serviceRoleKey: string): Promise<string> {
   // Bypasses row-level security entirely for this one-time admin operation;
@@ -320,6 +444,12 @@ export async function migrateFromFirebase(onProgress: (message: string) => void,
       if (Object.keys(updates).length > 0) {
         await admin.from('profiles').update(updates).eq('id', existing[0].id);
       }
+      // Make sure they're a member of the legacy group even if their
+      // profile predates it (e.g. re-running this import later)
+      await admin.from('group_members').upsert(
+        { group_id: LEGACY_GROUP_ID, profile_id: existing[0].id, role: 'member' },
+        { onConflict: 'group_id,profile_id', ignoreDuplicates: true }
+      );
     } else {
       const { data: created, error } = await admin
         .from('profiles')
@@ -334,6 +464,10 @@ export async function migrateFromFirebase(onProgress: (message: string) => void,
         .single();
       if (error) throw error;
       uidToProfileId[userDoc.id] = created.id;
+      await admin.from('group_members').upsert(
+        { group_id: LEGACY_GROUP_ID, profile_id: created.id, role: 'member' },
+        { onConflict: 'group_id,profile_id', ignoreDuplicates: true }
+      );
     }
   }
 
@@ -390,6 +524,11 @@ export async function migrateFromFirebase(onProgress: (message: string) => void,
     if (insertError) {
       throw describeError('photo insert failed', insertError);
     }
+
+    await admin.from('photo_groups').upsert(
+      { photo_id: photoRow.id, group_id: LEGACY_GROUP_ID },
+      { onConflict: 'photo_id,group_id', ignoreDuplicates: true }
+    );
 
     for (const c of p.comments || []) {
       const commentProfile = uidToProfileId[c.userId];
