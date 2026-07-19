@@ -90,12 +90,13 @@ export function compressImage(file: File): Promise<string> {
   });
 }
 
-export function groupPhotosByHour(photos: Photo[], users: User[], timeZone?: string, currentTime: Date = new Date(), hour12: boolean = true): TimeSlot[] {
+export function groupPhotosByHour(photos: Photo[], users: User[], timeZone?: string, selectedDate: Date = new Date(), hour12: boolean = true): TimeSlot[] {
   const slots = new Map<string, TimeSlot>();
 
-  // Pre-fill today's slots from midnight to current hour
-  const startOfDay = new Date(currentTime.getFullYear(), currentTime.getMonth(), currentTime.getDate(), 0);
-  const currentHour = new Date(currentTime.getFullYear(), currentTime.getMonth(), currentTime.getDate(), currentTime.getHours());
+  const isToday = selectedDate.toDateString() === new Date().toDateString();
+  const startOfDay = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), 0);
+  const endHour = isToday ? new Date().getHours() : 23;
+  const currentHour = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), endHour);
   
   let iterDate = new Date(startOfDay.getTime());
   while (iterDate.getTime() <= currentHour.getTime()) {

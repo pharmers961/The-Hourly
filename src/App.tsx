@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, Info, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings } from 'lucide-react';
+import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, Info, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
+import html2canvas from 'html2canvas';
 import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImage } from './utils';
 import { db, auth } from './firebase';
 import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
@@ -22,6 +23,9 @@ export default function App() {
   const [commentText, setCommentText] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [locationOverride, setLocationOverride] = useState(localStorage.getItem('locationOverride') || '');
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [isGeneratingCollage, setIsGeneratingCollage] = useState(false);
+  const collageRef = useRef<HTMLDivElement>(null);
 
   const handleLocationChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setLocationOverride(e.target.value);
@@ -236,8 +240,8 @@ export default function App() {
 
   const timeSlots = useMemo(() => {
     const isHour12 = activeUsers.find(u => u.id === user?.uid)?.settings?.timeFormat !== '24h';
-    return groupPhotosByHour(photos, activeUsers, referenceTimezone, currentTime, isHour12);
-  }, [photos, activeUsers, referenceTimezone, currentTime, user?.uid]);
+    return groupPhotosByHour(photos, activeUsers, referenceTimezone, selectedDate, isHour12);
+  }, [photos, activeUsers, referenceTimezone, selectedDate, user?.uid]);
 
   const sortedPhotos = useMemo(() => {
     return [...photos].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
@@ -245,7 +249,7 @@ export default function App() {
 
   const renderTemperature = (tempC: number) => {
     if (!user) return `${tempC}°C`;
-    const unit = activeUsers.find(u => u.id === user.uid)?.settings?.temperatureUnit || 'C';
+    const unit = activeUsers.find(u => u.id === user.uid)?.settings?.temperatureUnit || 'F';
     if (unit === 'F') {
       return `${Math.round(tempC * 9/5 + 32)}°F`;
     }
@@ -349,7 +353,11 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => signOut(auth);
+  const handleLogout = () => {
+    if (window.confirm('Are you sure you want to log out?')) {
+      signOut(auth);
+    }
+  };
 
   const handleNudge = async () => {
     if (!user || missedSiblings.length === 0) return;
@@ -422,7 +430,7 @@ export default function App() {
     try {
       const userRef = doc(db, 'users', user.uid);
       const currentUserData = users[user.uid] as any;
-      const newSettings = { ...(currentUserData?.settings || { temperatureUnit: 'C', timeFormat: '12h' }), ...updates };
+      const newSettings = { ...(currentUserData?.settings || { temperatureUnit: 'F', timeFormat: '12h' }), ...updates };
       
       // Optimistic update
       setUsers(prev => ({
@@ -457,6 +465,53 @@ export default function App() {
       setShowSettings(false);
     } catch (err) {
       console.error('Failed to delete account:', err);
+    }
+  };
+
+  const handleReaction = async (photoId: string, emoji: string = '❤️') => {
+    if (!user) return;
+    try {
+      const photoRef = doc(db, 'photos', photoId);
+      const photoDoc = await getDoc(photoRef);
+      if (!photoDoc.exists()) return;
+
+      const currentReactions = photoDoc.data().reactions || {};
+      const emojiUsers = currentReactions[emoji] || [];
+      
+      let newEmojiUsers;
+      if (emojiUsers.includes(user.uid)) {
+        newEmojiUsers = emojiUsers.filter((id: string) => id !== user.uid);
+      } else {
+        newEmojiUsers = [...emojiUsers, user.uid];
+      }
+
+      await updateDoc(photoRef, {
+        [`reactions.${emoji}`]: newEmojiUsers
+      });
+    } catch (err) {
+      console.error('Failed to react:', err);
+    }
+  };
+
+  const handleExportCollage = async () => {
+    if (!collageRef.current) return;
+    setIsGeneratingCollage(true);
+    try {
+      const canvas = await html2canvas(collageRef.current, {
+        scale: 2,
+        backgroundColor: '#F9F8F5',
+        logging: false,
+        useCORS: true
+      });
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+      const link = document.createElement('a');
+      link.download = `The-Hourly-${selectedDate.toLocaleDateString().replace(/\//g, '-')}.jpg`;
+      link.href = dataUrl;
+      link.click();
+    } catch (err) {
+      console.error('Export failed', err);
+    } finally {
+      setIsGeneratingCollage(false);
     }
   };
 
@@ -610,8 +665,37 @@ export default function App() {
     );
   }
 
+  const handlePrevDay = () => {
+    setSelectedDate(prev => {
+      const d = new Date(prev);
+      d.setDate(d.getDate() - 1);
+      return d;
+    });
+  };
+
+  const handleNextDay = () => {
+    setSelectedDate(prev => {
+      const d = new Date(prev);
+      d.setDate(d.getDate() + 1);
+      if (d > new Date()) return prev; // don't go to future
+      return d;
+    });
+  };
+
+  const isSelectedDateToday = selectedDate.toDateString() === new Date().toDateString();
+
   return (
     <div className="h-screen bg-[#F9F8F5] text-[#1A1A1A] font-serif flex flex-col selection:bg-[#1A1A1A] selection:text-[#F9F8F5] overflow-hidden print:overflow-visible print:bg-white print:h-auto">
+      {/* Top Right Settings Button */}
+      {!isAuthLoading && user && (
+        <button 
+          onClick={() => setShowSettings(true)} 
+          className="absolute top-4 right-4 md:top-10 md:right-10 z-50 p-2 opacity-60 hover:opacity-100 transition-opacity print:hidden bg-[#F9F8F5]/80 backdrop-blur-sm rounded-full"
+        >
+          <Settings size={20} strokeWidth={1.5} />
+        </button>
+      )}
+
       {/* Header Section */}
       <header className="flex flex-col md:flex-row md:justify-between md:items-end border-b-[0.5px] border-[#1A1A1A] print:border-black p-4 md:px-10 md:pt-10 pb-6 gap-4 shrink-0 z-20 bg-[#F9F8F5] print:bg-white">
         <div>
@@ -621,9 +705,13 @@ export default function App() {
         <div className="text-left md:text-right">
           <div className="font-sans text-[11px] uppercase tracking-widest flex items-center justify-start md:justify-end gap-4 mb-2 print:hidden">
             {!isAuthLoading && user && (
-              <button onClick={() => setShowSettings(true)} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
-                <Settings size={12} />
-                <span className="hidden md:inline">Settings</span>
+              <button 
+                onClick={handleExportCollage} 
+                disabled={isGeneratingCollage}
+                className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30"
+              >
+                <ImageIcon size={12} />
+                <span className="hidden md:inline">{isGeneratingCollage ? 'Exporting...' : 'Export Collage'}</span>
               </button>
             )}
             {!isAuthLoading && !user && (
@@ -633,26 +721,38 @@ export default function App() {
               </button>
             )}
           </div>
-          <div className="text-2xl font-light print:text-black">
-            <span className="print:hidden">
-              {currentTime.toLocaleTimeString('en-US', { 
-                hour12: activeUsers.find(u => u.id === user?.uid)?.settings?.timeFormat !== '24h', 
-                hour: '2-digit', 
-                minute: '2-digit', 
-                ...(referenceTimezone ? { timeZone: referenceTimezone } : {}) 
-              })} 
-            </span>
-            <span className="hidden print:inline">{new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })} Chronicle</span>
-            <span className="text-xs uppercase align-top ml-1 font-sans opacity-40 print:hidden">
-              {referenceTimezone ? referenceTimezone.split('/').pop()?.replace(/_/g, ' ') : (Intl.DateTimeFormat().resolvedOptions().timeZone.split('/').pop()?.replace(/_/g, ' ') || 'LOCAL')}
-            </span>
+          <div className="text-2xl font-light print:text-black flex items-center md:justify-end gap-3">
+            <div className="flex items-center gap-2 print:hidden">
+              <button onClick={handlePrevDay} className="opacity-40 hover:opacity-100 transition-opacity"><ChevronLeft size={16} /></button>
+              <span className="text-lg">
+                {isSelectedDateToday ? 'Today' : selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+              </span>
+              <button onClick={handleNextDay} disabled={isSelectedDateToday} className={`transition-opacity ${isSelectedDateToday ? 'opacity-10 cursor-not-allowed' : 'opacity-40 hover:opacity-100'}`}><ChevronRight size={16} /></button>
+            </div>
+            
+            {isSelectedDateToday && (
+              <span className="print:hidden border-l border-[#1A1A1A] border-opacity-20 pl-3">
+                {currentTime.toLocaleTimeString('en-US', { 
+                  hour12: activeUsers.find(u => u.id === user?.uid)?.settings?.timeFormat !== '24h', 
+                  hour: '2-digit', 
+                  minute: '2-digit', 
+                  ...(referenceTimezone ? { timeZone: referenceTimezone } : {}) 
+                })} 
+              </span>
+            )}
+            <span className="hidden print:inline">{selectedDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })} Chronicle</span>
+            {isSelectedDateToday && (
+              <span className="text-xs uppercase align-top ml-1 font-sans opacity-40 print:hidden">
+                {referenceTimezone ? referenceTimezone.split('/').pop()?.replace(/_/g, ' ') : (Intl.DateTimeFormat().resolvedOptions().timeZone.split('/').pop()?.replace(/_/g, ' ') || 'LOCAL')}
+              </span>
+            )}
           </div>
         </div>
       </header>
 
       {/* Main Matrix View */}
       <main className="flex-grow overflow-auto relative print:overflow-visible">
-        <div className="min-w-[600px] md:min-w-0 max-w-4xl mx-auto px-4 md:px-10 pb-24 w-full print:px-0 print:pb-0">
+        <div ref={collageRef} className="min-w-[600px] md:min-w-0 max-w-4xl mx-auto px-4 md:px-10 pb-24 w-full print:px-0 print:pb-0">
           {/* Column Headers (X-Axis: Names) */}
           <div className="sticky top-0 z-20 bg-[#F9F8F5] pt-6 grid gap-4 mb-4 border-b-[0.5px] border-[#1A1A1A] pb-2 print:relative print:bg-white print:border-black print:pt-4" style={gridStyle}>
             <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end hidden md:block print:bg-white print:text-black">Hour / Slot</div>
@@ -703,6 +803,10 @@ export default function App() {
                               newPhotoIds.has(photo.id) ? 'ring-2 ring-[#C5A059] ring-offset-2 ring-offset-[#F9F8F5] animate-pulse shadow-[0_0_15px_rgba(197,160,89,0.3)] z-10 relative' : ''
                             }`}
                             onClick={() => setSelectedPhoto(photo)}
+                            onDoubleClick={(e) => {
+                              e.stopPropagation();
+                              handleReaction(photo.id, '❤️');
+                            }}
                           >
                             <div className="bg-[#EAE8E4] flex-grow relative overflow-hidden group print:bg-transparent">
                               <img
@@ -710,6 +814,12 @@ export default function App() {
                                 alt={`${sibling.name}'s photo at ${slot.displayTime}`}
                                 className="absolute inset-0 w-full h-full object-cover transition-all duration-700 print:opacity-100"
                               />
+                              {photo.reactions && photo.reactions['❤️']?.length > 0 && (
+                                <div className="absolute top-2 right-2 flex items-center gap-1 bg-white/80 backdrop-blur-sm rounded-full px-1.5 py-0.5 text-xs text-red-500 shadow-sm">
+                                  <Heart size={10} className="fill-current" />
+                                  <span className="font-sans text-[8px]">{photo.reactions['❤️'].length}</span>
+                                </div>
+                              )}
                               {photo.metadata && (
                                 <div className="absolute inset-x-0 bottom-0 p-2 md:p-3 bg-gradient-to-t from-black/60 via-black/30 to-transparent opacity-80 group-hover:opacity-100 transition-opacity duration-500 flex justify-between items-end print:opacity-100 print:bg-none print:bg-white/90">
                                   <div className="flex items-center space-x-1 text-white print:text-black">
@@ -990,7 +1100,10 @@ export default function App() {
         <div className="fixed inset-0 z-[200] bg-black/40 flex items-center justify-center p-4">
           <div className="bg-[#F9F8F5] p-6 md:p-10 w-full max-w-md max-h-[90vh] overflow-y-auto shadow-2xl relative animate-in fade-in zoom-in-95 duration-200 border-[0.5px] border-[#1A1A1A]">
             <button 
-              onClick={() => setShowSettings(false)}
+              onClick={() => {
+                handleSaveSettings({ displayLocation: locationOverride });
+                setShowSettings(false);
+              }}
               className="absolute top-4 right-4 opacity-60 hover:opacity-100 transition-opacity"
             >
               <X size={20} />
@@ -1017,17 +1130,19 @@ export default function App() {
                     <input 
                       type="radio" 
                       name="tempUnit" 
-                      checked={activeUsers.find(u => u.id === user.uid)?.settings?.temperatureUnit !== 'F'}
-                      onChange={() => handleSaveSettings({ temperatureUnit: 'C' })}
+                      value="C"
+                      checked={activeUsers.find(u => u.id === user.uid)?.settings?.temperatureUnit === 'C'}
+                      onChange={(e) => e.target.checked && handleSaveSettings({ temperatureUnit: 'C' })}
                     />
                     Celsius (°C)
                   </label>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input 
                       type="radio" 
-                      name="tempUnit" 
-                      checked={activeUsers.find(u => u.id === user.uid)?.settings?.temperatureUnit === 'F'}
-                      onChange={() => handleSaveSettings({ temperatureUnit: 'F' })}
+                      name="tempUnit"
+                      value="F" 
+                      checked={(activeUsers.find(u => u.id === user.uid)?.settings?.temperatureUnit || 'F') === 'F'}
+                      onChange={(e) => e.target.checked && handleSaveSettings({ temperatureUnit: 'F' })}
                     />
                     Fahrenheit (°F)
                   </label>
@@ -1040,18 +1155,20 @@ export default function App() {
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input 
                       type="radio" 
-                      name="timeFormat" 
+                      name="timeFormat"
+                      value="12h" 
                       checked={activeUsers.find(u => u.id === user.uid)?.settings?.timeFormat !== '24h'}
-                      onChange={() => handleSaveSettings({ timeFormat: '12h' })}
+                      onChange={(e) => e.target.checked && handleSaveSettings({ timeFormat: '12h' })}
                     />
                     12-hour
                   </label>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input 
                       type="radio" 
-                      name="timeFormat" 
+                      name="timeFormat"
+                      value="24h" 
                       checked={activeUsers.find(u => u.id === user.uid)?.settings?.timeFormat === '24h'}
-                      onChange={() => handleSaveSettings({ timeFormat: '24h' })}
+                      onChange={(e) => e.target.checked && handleSaveSettings({ timeFormat: '24h' })}
                     />
                     24-hour
                   </label>
@@ -1102,7 +1219,7 @@ export default function App() {
                   </button>
                 </div>
 
-                <div className="flex flex-col gap-3 pt-4">
+                <div className="flex flex-col gap-4 pt-8 mt-4 border-t-[0.5px] border-[#1A1A1A]/20">
                   <button onClick={handleLogout} className="flex items-center gap-2 text-sm opacity-60 hover:opacity-100 transition-opacity w-fit">
                     <LogOut size={14} />
                     <span>Logout</span>
