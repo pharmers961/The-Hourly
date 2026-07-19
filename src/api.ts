@@ -294,37 +294,15 @@ export async function uploadPhotoToGroups(profileId: string, imageBlob: Blob, me
   });
   if (uploadError) throw describeError('storage upload failed', uploadError);
 
-  // Force a fresh, valid session right before the write: geolocation +
-  // weather lookups upstream of this call can take several seconds, and if
-  // a background token refresh lands mid-capture, this is the request most
-  // likely to catch a stale token.
-  await supabase.auth.getSession();
-
-  const { data: photoRow, error: insertError } = await supabase
-    .from('photos')
-    .insert({ profile_id: profileId, taken_at: new Date().toISOString(), image_path: path, metadata })
-    .select('id')
-    .single();
-  if (insertError) {
-    // RLS violation on an insert that should always be self-consistent
-    // (profile_id is the caller's own id) — pull what the session actually
-    // resolves to server-side so the mismatch, if any, is visible in the
-    // error itself rather than requiring another round of guessing.
-    let whoami = '';
-    try {
-      const { data } = await supabase.rpc('debug_whoami');
-      const row = Array.isArray(data) ? data[0] : data;
-      if (row) whoami = ` | attempted profile_id=${profileId} auth_uid=${row.auth_uid} resolved_profile_id=${row.resolved_profile_id} resolved_email=${row.resolved_email}`;
-    } catch {
-      // best-effort only
-    }
-    throw describeError('photo insert failed', insertError, whoami);
-  }
-
-  const { error: linkError } = await supabase
-    .from('photo_groups')
-    .insert(groupIds.map(group_id => ({ photo_id: photoRow.id, group_id })));
-  if (linkError) throw describeError('sharing to group failed', linkError);
+  // Insert + group-share happen server-side (create_photo RPC), which resolves
+  // the profile from the session rather than trusting a client-passed id, and
+  // bypasses RLS — so this can't fail with a photos RLS violation.
+  const { error } = await supabase.rpc('create_photo', {
+    p_image_path: path,
+    p_metadata: metadata,
+    p_group_ids: groupIds,
+  });
+  if (error) throw describeError('photo insert failed', error);
 }
 
 export async function addComment(photoId: string, profileId: string, text: string): Promise<void> {

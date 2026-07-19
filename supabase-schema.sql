@@ -189,6 +189,65 @@ as $$
   select auth.uid(), public.my_profile_id(), (select email from profiles where id = public.my_profile_id())
 $$;
 
+-- Insert a photo and share it into groups, entirely server-side. Because this
+-- runs SECURITY DEFINER, the profile_id is resolved from the session here
+-- (never trusted from the client) and the inserts bypass row-level security —
+-- which eliminates the "new row violates RLS policy for photos" failure that
+-- happens when the client's idea of its own profile id drifts from the
+-- session's. Also self-heals a stale auth_id link (e.g. signing in with a
+-- different provider than last time) by re-matching on the verified email.
+create or replace function public.create_photo(
+  p_image_path text,
+  p_metadata jsonb,
+  p_group_ids uuid[]
+)
+returns uuid
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_email text := lower(coalesce(auth.jwt() ->> 'email', ''));
+  v_profile_id uuid;
+  v_photo_id uuid;
+  v_gid uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'Not signed in. Please sign out and back in.';
+  end if;
+
+  select id into v_profile_id from profiles where auth_id = auth.uid();
+
+  if v_profile_id is null and v_email <> '' then
+    -- This session's auth user isn't linked to a profile (commonly: signed in
+    -- with a different provider than when the profile was created). Re-link by
+    -- verified email — safe here because it's one person per email.
+    select id into v_profile_id from profiles where lower(email) = v_email limit 1;
+    if v_profile_id is not null then
+      update profiles set auth_id = auth.uid() where id = v_profile_id;
+    end if;
+  end if;
+
+  if v_profile_id is null then
+    raise exception 'No profile found for this account. Please sign out and back in.';
+  end if;
+
+  insert into photos (profile_id, taken_at, image_path, metadata)
+  values (v_profile_id, now(), p_image_path, p_metadata)
+  returning id into v_photo_id;
+
+  if p_group_ids is not null then
+    foreach v_gid in array p_group_ids loop
+      -- only share into groups the caller actually belongs to
+      if exists (select 1 from group_members where group_id = v_gid and profile_id = v_profile_id) then
+        insert into photo_groups (photo_id, group_id) values (v_photo_id, v_gid)
+        on conflict (photo_id, group_id) do nothing;
+      end if;
+    end loop;
+  end if;
+
+  return v_photo_id;
+end;
+$$;
+
 -- A photo is visible to its uploader, or to anyone in a group it's been
 -- shared into.
 create or replace function public.can_view_photo(p_photo_id uuid)
