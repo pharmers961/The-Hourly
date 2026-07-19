@@ -561,7 +561,7 @@ export default function App() {
               return (
                 <div 
                   key={slot.hourKey} 
-                  className={`grid gap-4 h-[120px] md:h-[160px] p-2 md:p-0 transition-colors print:page-break-inside-avoid print:h-[200px] ${
+                  className={`grid gap-4 p-2 md:p-0 transition-colors print:page-break-inside-avoid print:h-[200px] ${
                     isCurrent ? 'outline outline-1 outline-offset-4 outline-[#C5A059] bg-[#C5A059] bg-opacity-5 print:outline-none print:bg-transparent' : ''
                   }`} 
                   style={gridStyle}
@@ -578,7 +578,7 @@ export default function App() {
                   {activeUsers.map(sibling => {
                     const photo = slot.photos[sibling.id];
                     return (
-                      <div key={sibling.id} className="h-full">
+                      <div key={sibling.id} className="w-full aspect-square max-h-[200px] md:max-h-[300px]">
                         {photo ? (
                           <div 
                             className={`h-full bg-white border-[0.5px] border-[#1A1A1A] border-opacity-20 p-1 flex flex-col hover:border-opacity-60 transition-all duration-1000 cursor-pointer print:border-black print:border-opacity-30 ${
