@@ -1,0 +1,40 @@
+--- src/App.tsx
++++ src/App.tsx
+@@ -36,19 +36,19 @@
+   useEffect(() => {
+     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+-      setUser(currentUser);
+-      setIsAuthLoading(false);
+-      
+       if (currentUser) {
+         // Register or update user in Firestore
+         const userRef = doc(db, 'users', currentUser.uid);
+-        const userDoc = await getDoc(userRef);
+-        
+-        let tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+-        if (userDoc.exists()) {
+-          tz = userDoc.data().timezone || tz;
++        let tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
++        try {
++          const userDoc = await getDoc(userRef);
++          if (userDoc.exists()) {
++            tz = userDoc.data().timezone || tz;
++          }
++        } catch (e) {
++          console.warn("Could not read user doc initially, will create/update it", e);
+         }
+ 
+         await setDoc(userRef, {
+           id: currentUser.uid,
+           name: currentUser.displayName || 'Unknown',
+           email: currentUser.email,
+           timezone: tz,
+           lastActive: new Date().toISOString()
+         }, { merge: true });
++        
++        setUser(currentUser);
++      } else {
++        setUser(null);
+       }
++      setIsAuthLoading(false);
+     });

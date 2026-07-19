@@ -53,12 +53,11 @@ service cloud.firestore {
     
     function isValidPhoto(data) {
       return data.keys().hasAll(['id', 'userId', 'timestamp', 'imageUrl']) &&
-             data.keys().size() >= 4 && data.keys().size() <= 5 &&
              data.id is string && data.id.size() <= 128 &&
              data.userId is string && data.userId == request.auth.uid &&
              data.timestamp is string && data.timestamp.size() <= 50 &&
-             data.imageUrl is string && data.imageUrl.size() <= 500 &&
-             (!('metadata' in data.keys()) || (data.metadata is map && data.metadata.keys().hasAll(['temperature', 'noiseLevel']) && data.metadata.keys().size() == 2 && data.metadata.temperature is number && data.metadata.noiseLevel is number));
+             data.imageUrl is string &&
+             (!('metadata' in data) || (data.metadata is map && 'temperature' in data.metadata && data.metadata.temperature is number && 'noiseLevel' in data.metadata && data.metadata.noiseLevel is number));
     }
     
     match /photos/{photoId} {
@@ -70,12 +69,14 @@ service cloud.firestore {
                        isValidPhoto(incoming());
                        
       allow update: if isRegisteredUser() &&
-                       existing().userId == request.auth.uid &&
-                       isValidPhoto(incoming()) &&
-                       incoming().id == existing().id &&
-                       incoming().userId == existing().userId;
+                       incoming().id == existing().id; // allow anyone registered to add comments/reactions
                        
       allow delete: if isRegisteredUser() && existing().userId == request.auth.uid;
+    }
+
+    match /nudges/{nudgeId} {
+      allow read: if isRegisteredUser();
+      allow write: if isRegisteredUser();
     }
   }
 }

@@ -34,18 +34,10 @@ export default function App() {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setUser(currentUser);
-      setIsAuthLoading(false);
-      
       if (currentUser) {
         // Register or update user in Firestore
         const userRef = doc(db, 'users', currentUser.uid);
-        const userDoc = await getDoc(userRef);
-        
-        let tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-        if (userDoc.exists()) {
-          tz = userDoc.data().timezone || tz;
-        }
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
         await setDoc(userRef, {
           id: currentUser.uid,
@@ -54,7 +46,12 @@ export default function App() {
           timezone: tz,
           lastActive: new Date().toISOString()
         }, { merge: true });
+        
+        setUser(currentUser);
+      } else {
+        setUser(null);
       }
+      setIsAuthLoading(false);
     });
     return () => unsubscribe();
   }, []);
@@ -112,6 +109,8 @@ export default function App() {
       }
       
       isFirstPhotosLoad = false;
+    }, (error) => {
+      console.error('Error fetching photos:', error);
     });
 
     const usersQuery = query(collection(db, 'users'));
@@ -121,6 +120,8 @@ export default function App() {
         usersData[doc.id] = doc.data();
       });
       setUsers(usersData);
+    }, (error) => {
+      console.error('Error fetching users:', error);
     });
 
     let isFirstNudgesLoad = true;
@@ -384,6 +385,20 @@ export default function App() {
     }
   };
 
+  const handleDeleteComment = async (commentId: string) => {
+    if (!selectedPhoto || !user) return;
+    try {
+      const commentToRemove = selectedPhoto.comments?.find(c => c.id === commentId);
+      if (!commentToRemove) return;
+      
+      await updateDoc(doc(db, 'photos', selectedPhoto.id), {
+        comments: arrayRemove(commentToRemove)
+      });
+    } catch (err) {
+      console.error('Failed to delete comment:', err);
+    }
+  };
+
   const handleToggleReaction = async (emoji: string) => {
     if (!selectedPhoto || !user) return;
     try {
@@ -511,7 +526,7 @@ export default function App() {
             <span className="print:hidden">{currentTime.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', ...(referenceTimezone ? { timeZone: referenceTimezone } : {}) })} </span>
             <span className="hidden print:inline">{new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })} Chronicle</span>
             <span className="text-xs uppercase align-top ml-1 font-sans opacity-40 print:hidden">
-              {referenceTimezone ? referenceTimezone.split('/')[1] : (Intl.DateTimeFormat().resolvedOptions().timeZone.split('/')[1] || 'LOCAL')}
+              {referenceTimezone ? referenceTimezone.split('/').pop()?.replace(/_/g, ' ') : (Intl.DateTimeFormat().resolvedOptions().timeZone.split('/').pop()?.replace(/_/g, ' ') || 'LOCAL')}
             </span>
           </div>
         </div>
@@ -531,7 +546,7 @@ export default function App() {
                   <div className={`w-1.5 h-1.5 md:w-2 md:h-2 rounded-full transition-colors duration-1000 print:hidden ${isSiblingOnline(sibling.id, sibling.name) ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-[#1A1A1A] opacity-20'}`} />
                 </div>
                 <span className="font-sans text-[8px] md:text-[9px] uppercase opacity-40 tracking-tighter truncate block px-1 print:text-black print:opacity-60">
-                  {sibling.timezone.replace('_', ' ')}
+                  {sibling.timezone.split('/').pop()?.replace(/_/g, ' ')}
                 </span>
               </div>
             ))}
@@ -747,14 +762,25 @@ export default function App() {
               <div className="w-full max-w-md mt-6 text-left">
                 <div className="flex flex-col gap-3 mb-6">
                   {(selectedPhoto.comments || []).map(comment => (
-                    <div key={comment.id} className="bg-white p-3 border-[0.5px] border-[#1A1A1A] shadow-sm flex flex-col gap-1">
+                    <div key={comment.id} className="bg-white p-3 border-[0.5px] border-[#1A1A1A] shadow-sm flex flex-col gap-1 relative group">
                       <div className="flex items-center justify-between">
                         <span className="font-serif font-bold italic text-sm">{comment.userName}</span>
-                        <span className="font-sans text-[8px] uppercase tracking-widest opacity-40">
-                          {new Date(comment.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="font-sans text-[8px] uppercase tracking-widest opacity-40">
+                            {new Date(comment.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                          </span>
+                          {user && user.uid === comment.userId && (
+                            <button
+                              onClick={() => handleDeleteComment(comment.id)}
+                              className="opacity-0 group-hover:opacity-100 transition-opacity text-red-600 hover:text-red-800"
+                              aria-label="Delete comment"
+                            >
+                              <X size={12} />
+                            </button>
+                          )}
+                        </div>
                       </div>
-                      <p className="font-sans text-xs">{comment.text}</p>
+                      <p className="font-sans text-xs pr-4">{comment.text}</p>
                     </div>
                   ))}
                 </div>
