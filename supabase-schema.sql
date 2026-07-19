@@ -249,7 +249,8 @@ begin
 end;
 $$;
 
--- Owner-only: invalidates the old invite link and returns a fresh code.
+-- Any member (everyone is an admin) can invalidate the old invite link and
+-- get a fresh code.
 create or replace function public.regenerate_invite_code(p_group_id uuid)
 returns text
 language plpgsql security definer set search_path = public
@@ -257,11 +258,8 @@ as $$
 declare
   v_code text;
 begin
-  if not exists (
-    select 1 from group_members
-    where group_id = p_group_id and profile_id = public.my_profile_id() and role = 'owner'
-  ) then
-    raise exception 'Only the group owner can do this.';
+  if not public.is_group_member(p_group_id) then
+    raise exception 'Only group members can do this.';
   end if;
 
   v_code := public.generate_invite_code();
@@ -308,17 +306,17 @@ drop policy if exists "groups read" on public.groups;
 create policy "groups read" on public.groups
   for select to authenticated using (public.is_group_member(id));
 
+-- Everyone in a group is an admin: any member can rename or delete the group
+-- and remove members.
 drop policy if exists "groups update owner" on public.groups;
-create policy "groups update owner" on public.groups
-  for update to authenticated using (
-    exists (select 1 from group_members gm where gm.group_id = id and gm.profile_id = public.my_profile_id() and gm.role = 'owner')
-  );
+drop policy if exists "groups update member" on public.groups;
+create policy "groups update member" on public.groups
+  for update to authenticated using (public.is_group_member(id));
 
 drop policy if exists "groups delete owner" on public.groups;
-create policy "groups delete owner" on public.groups
-  for delete to authenticated using (
-    exists (select 1 from group_members gm where gm.group_id = id and gm.profile_id = public.my_profile_id() and gm.role = 'owner')
-  );
+drop policy if exists "groups delete member" on public.groups;
+create policy "groups delete member" on public.groups
+  for delete to authenticated using (public.is_group_member(id));
 
 drop policy if exists "group_members read" on public.group_members;
 create policy "group_members read" on public.group_members
@@ -327,13 +325,8 @@ create policy "group_members read" on public.group_members
 drop policy if exists "group_members delete" on public.group_members;
 create policy "group_members delete" on public.group_members
   for delete to authenticated using (
-    profile_id = public.my_profile_id() -- leave a group yourself
-    or exists ( -- or the group owner removing someone
-      select 1 from group_members gm2
-      where gm2.group_id = group_members.group_id
-        and gm2.profile_id = public.my_profile_id()
-        and gm2.role = 'owner'
-    )
+    -- leave yourself, or (as an admin) remove anyone else in a group you're in
+    public.is_group_member(group_id)
   );
 
 drop policy if exists "photos read" on public.photos;

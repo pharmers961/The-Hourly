@@ -9,7 +9,10 @@ import { Photo, User as AppUser, UserSettings, Group } from './types';
 
 export default function App() {
   const [photos, setPhotos] = useState<Photo[]>([]);
+  // All profiles relevant to the current group: current members plus authors
+  // of photos still in the group (who may have since left).
   const [users, setUsers] = useState<Record<string, AppUser>>({});
+  const [memberIds, setMemberIds] = useState<string[]>([]);
   const [isCapturing, setIsCapturing] = useState(false);
   const [profile, setProfile] = useState<(AppUser & { email: string }) | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
@@ -158,6 +161,7 @@ export default function App() {
     if (!selectedGroupId) {
       setPhotos([]);
       setUsers({});
+      setMemberIds([]);
       usersRef.current = {};
       return;
     }
@@ -165,6 +169,7 @@ export default function App() {
       const data = await api.fetchGroupData(selectedGroupId);
       usersRef.current = data.profiles;
       setUsers(data.profiles);
+      setMemberIds(data.memberIds);
       setPhotos(data.photos);
 
       if (knownPhotoIds.current) {
@@ -275,6 +280,7 @@ export default function App() {
     if (!profile || !selectedGroupId) {
       setPhotos([]);
       setUsers({});
+      setMemberIds([]);
       usersRef.current = {};
       knownPhotoIds.current = null;
       return;
@@ -385,10 +391,17 @@ export default function App() {
 
   const [currentTime, setCurrentTime] = useState(new Date());
 
-  const activeUsers: AppUser[] = useMemo(() => Object.values(users), [users]);
+  // Current members of the group — the people who can post going forward, get
+  // nudged, appear in the timezone list, etc.
+  const activeUsers: AppUser[] = useMemo(
+    () => memberIds.map(id => users[id]).filter(Boolean),
+    [memberIds, users]
+  );
 
   const selectedGroup = useMemo(() => groups.find(g => g.id === selectedGroupId) || null, [groups, selectedGroupId]);
-  const isGroupOwner = selectedGroup?.role === 'owner';
+  // Everyone in a group is an admin: any member can rename, manage the invite
+  // link, remove members, and delete the group.
+  const canAdmin = !!selectedGroup;
 
   useEffect(() => {
     if (showSettings && user) {
@@ -417,6 +430,22 @@ export default function App() {
       return Object.values(slot.photos).some(p => !!p);
     });
   }, [timeSlots, isSelectedDateToday]);
+
+  // Matrix columns = current members, plus anyone who has a photo on the
+  // displayed date (so a member who left still shows their past photos in
+  // history, but has no column going forward). Members always keep a column.
+  const columnUsers: AppUser[] = useMemo(() => {
+    const memberSet = new Set(memberIds);
+    const formerIds = new Set<string>();
+    displayedSlots.forEach(slot => {
+      Object.keys(slot.photos).forEach(uid => {
+        if (!memberSet.has(uid)) formerIds.add(uid);
+      });
+    });
+    const members = memberIds.map(id => users[id]).filter(Boolean);
+    const formers = [...formerIds].map(id => users[id]).filter(Boolean);
+    return [...members, ...formers];
+  }, [memberIds, displayedSlots, users]);
 
   const sortedPhotos = useMemo(() => {
     return [...photos].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
@@ -1004,7 +1033,7 @@ export default function App() {
     }
   };
 
-  const gridStyle = { gridTemplateColumns: `64px repeat(${activeUsers.length > 0 ? activeUsers.length : 1}, 1fr)` };
+  const gridStyle = { gridTemplateColumns: `64px repeat(${columnUsers.length > 0 ? columnUsers.length : 1}, 1fr)` };
 
   const STANDARD_TIMEZONES = [
     { label: 'New York (EST)', value: 'America/New_York' },
@@ -1200,7 +1229,7 @@ export default function App() {
           <div className="sticky top-0 z-20 bg-[#F9F8F5] pt-6 grid gap-4 mb-4 border-b-[0.5px] border-[#1A1A1A] pb-2 print:relative print:bg-white print:border-black print:pt-4" style={gridStyle}>
             <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end hidden md:block print:bg-white print:text-black">Hour / Slot</div>
             <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end md:hidden print:hidden">Time</div>
-            {activeUsers.map(sibling => {
+            {columnUsers.map(sibling => {
               // Split on any whitespace (incl. non-breaking spaces) so every
               // name renders as first name over last name.
               const nameParts = sibling.name.trim().split(/\s+/);
@@ -1253,7 +1282,7 @@ export default function App() {
                     </span>
                   </div>
                   
-                  {activeUsers.map(sibling => {
+                  {columnUsers.map(sibling => {
                     const photo = slot.photos[sibling.id];
                     return (
                       <div key={sibling.id} className="w-full max-w-[140px] md:max-w-[220px] aspect-square mx-auto">
@@ -1838,38 +1867,33 @@ export default function App() {
                 <div className="flex flex-col gap-4 pt-6 border-t-[0.5px] border-[#1A1A1A]">
                   <label className="font-sans text-[10px] uppercase tracking-widest opacity-60">Group</label>
 
-                  {isGroupOwner ? (
-                    <input
-                      type="text"
-                      value={manageGroupName}
-                      onChange={(e) => setManageGroupName(e.target.value)}
-                      onBlur={handleRenameGroup}
-                      className="bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors"
-                    />
-                  ) : (
-                    <p className="font-sans text-sm">{selectedGroup.name}</p>
-                  )}
+                  {/* Everyone is an admin — all controls available to all members */}
+                  <input
+                    type="text"
+                    value={manageGroupName}
+                    onChange={(e) => setManageGroupName(e.target.value)}
+                    onBlur={handleRenameGroup}
+                    className="bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors"
+                  />
 
                   <button onClick={handleCopyInviteLink} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity w-fit">
                     <Share size={14} />
                     <span>Copy Invite Link</span>
                   </button>
 
-                  {isGroupOwner && (
-                    <button onClick={handleRegenerateInvite} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity w-fit">
-                      <RefreshCw size={14} />
-                      <span>Generate New Invite Link</span>
-                    </button>
-                  )}
+                  <button onClick={handleRegenerateInvite} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity w-fit">
+                    <RefreshCw size={14} />
+                    <span>Generate New Invite Link</span>
+                  </button>
 
                   <div className="flex flex-col gap-1">
                     {groupMemberRoles.map(m => (
                       <div key={m.profileId} className="flex items-center justify-between font-sans text-sm py-1">
                         <span>
                           {users[m.profileId]?.name || 'Unknown'}
-                          {m.role === 'owner' && <span className="opacity-40 text-[10px] uppercase ml-2">Owner</span>}
+                          {m.role === 'owner' && <span className="opacity-40 text-[10px] uppercase ml-2">Creator</span>}
                         </span>
-                        {isGroupOwner && m.profileId !== user.uid && (
+                        {canAdmin && m.profileId !== user.uid && (
                           <button onClick={() => handleRemoveMember(m.profileId)} className="text-red-600 opacity-60 hover:opacity-100 transition-opacity" aria-label="Remove member">
                             <X size={14} />
                           </button>
@@ -1878,17 +1902,16 @@ export default function App() {
                     ))}
                   </div>
 
-                  {isGroupOwner ? (
-                    <button onClick={handleDeleteGroup} className="flex items-center gap-2 text-sm text-red-600 opacity-80 hover:opacity-100 transition-colors w-fit">
-                      <Trash2 size={14} />
-                      <span>Delete Group</span>
-                    </button>
-                  ) : (
+                  <div className="flex items-center gap-6">
                     <button onClick={handleLeaveGroup} className="flex items-center gap-2 text-sm text-red-600 opacity-80 hover:opacity-100 transition-colors w-fit">
                       <LogOut size={14} />
                       <span>Leave Group</span>
                     </button>
-                  )}
+                    <button onClick={handleDeleteGroup} className="flex items-center gap-2 text-sm text-red-600 opacity-80 hover:opacity-100 transition-colors w-fit">
+                      <Trash2 size={14} />
+                      <span>Delete Group</span>
+                    </button>
+                  </div>
                 </div>
               )}
 

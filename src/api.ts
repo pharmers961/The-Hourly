@@ -36,6 +36,7 @@ interface PhotoRow {
   image_path: string;
   metadata: PhotoMetadata | null;
   firebase_id: string | null;
+  author: ProfileRow | null; // embedded so departed members' names still resolve in history
   comments: CommentRow[];
   reactions: ReactionRow[];
 }
@@ -103,6 +104,7 @@ function mapPhotoRow(ph: PhotoRow): Photo {
 export interface AppData {
   profiles: Record<string, AppUser>;
   photos: Photo[];
+  memberIds: string[];
 }
 
 export function publicPhotoUrl(imagePath: string): string {
@@ -239,22 +241,33 @@ interface PhotoGroupRow {
 export async function fetchGroupData(groupId: string): Promise<AppData> {
   const [membersRes, photoLinksRes] = await Promise.all([
     supabase.from('group_members').select('profiles(*)').eq('group_id', groupId),
-    supabase.from('photo_groups').select('photos(*, comments(*, profiles(name)), reactions(*))').eq('group_id', groupId),
+    supabase.from('photo_groups').select('photos(*, author:profiles(*), comments(*, profiles(name)), reactions(*))').eq('group_id', groupId),
   ]);
   if (membersRes.error) throw membersRes.error;
   if (photoLinksRes.error) throw photoLinksRes.error;
 
   const profiles: Record<string, AppUser> = {};
+  const memberIds: string[] = [];
   (membersRes.data as unknown as GroupMemberProfileRow[]).forEach(row => {
-    if (row.profiles) profiles[row.profiles.id] = mapProfileRow(row.profiles);
+    if (row.profiles) {
+      profiles[row.profiles.id] = mapProfileRow(row.profiles);
+      memberIds.push(row.profiles.id);
+    }
   });
 
   const photos: Photo[] = (photoLinksRes.data as unknown as PhotoGroupRow[])
     .filter(row => row.photos)
-    .map(row => mapPhotoRow(row.photos!))
+    .map(row => {
+      // A photo's author may have left the group — keep their profile around
+      // so their name still shows when browsing history
+      if (row.photos!.author && !profiles[row.photos!.author.id]) {
+        profiles[row.photos!.author.id] = mapProfileRow(row.photos!.author);
+      }
+      return mapPhotoRow(row.photos!);
+    })
     .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
-  return { profiles, photos };
+  return { profiles, photos, memberIds };
 }
 
 export async function uploadPhotoToGroups(profileId: string, imageBlob: Blob, metadata: PhotoMetadata, groupIds: string[]): Promise<void> {
