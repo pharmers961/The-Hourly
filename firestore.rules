@@ -8,15 +8,15 @@ service cloud.firestore {
     function isValidId(id) {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
-    
+
     function incoming() {
       return request.resource.data;
     }
-    
+
     function existing() {
       return resource.data;
     }
-    
+
     function isSignedIn() {
       return request.auth != null;
     }
@@ -24,26 +24,35 @@ service cloud.firestore {
     function isRegisteredUser() {
       return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
     }
-    
+
+    function isValidSettings(s) {
+      return s is map &&
+             s.keys().hasOnly(['temperatureUnit', 'timeFormat', 'displayLocation']) &&
+             (!('temperatureUnit' in s.keys()) || s.temperatureUnit in ['C', 'F']) &&
+             (!('timeFormat' in s.keys()) || s.timeFormat in ['12h', '24h']) &&
+             (!('displayLocation' in s.keys()) || (s.displayLocation is string && s.displayLocation.size() <= 100));
+    }
+
     function isValidUser(data) {
       return data.keys().hasAll(['id', 'name', 'email', 'timezone']) &&
-             data.keys().size() >= 4 && data.keys().size() <= 5 &&
+             data.keys().hasOnly(['id', 'name', 'email', 'timezone', 'lastActive', 'settings']) &&
              data.id is string && data.id.size() <= 128 && data.id == request.auth.uid &&
              data.name is string && data.name.size() <= 50 &&
              data.email is string && data.email.size() <= 100 &&
              data.timezone is string && data.timezone.size() <= 50 &&
-             (!('lastActive' in data.keys()) || (data.lastActive is string && data.lastActive.size() <= 50));
+             (!('lastActive' in data.keys()) || (data.lastActive is string && data.lastActive.size() <= 50)) &&
+             (!('settings' in data.keys()) || isValidSettings(data.settings));
     }
-    
+
     match /users/{userId} {
       allow get: if isSignedIn();
       allow list: if isSignedIn();
-      
+
       allow create: if isSignedIn() &&
                        isValidId(userId) &&
                        userId == request.auth.uid &&
                        isValidUser(incoming());
-                       
+
       allow update: if isSignedIn() &&
                        userId == request.auth.uid &&
                        isValidUser(incoming()) &&
@@ -52,7 +61,7 @@ service cloud.firestore {
 
       allow delete: if isSignedIn() && userId == request.auth.uid;
     }
-    
+
     function isValidPhoto(data) {
       return data.keys().hasAll(['id', 'userId', 'timestamp', 'imageUrl']) &&
              data.id is string && data.id.size() <= 128 &&
@@ -61,24 +70,49 @@ service cloud.firestore {
              data.imageUrl is string &&
              (!('metadata' in data) || (data.metadata is map && 'temperature' in data.metadata && data.metadata.temperature is number && 'noiseLevel' in data.metadata && data.metadata.noiseLevel is number));
     }
-    
+
     match /photos/{photoId} {
       allow get: if isRegisteredUser();
-      allow list: if isRegisteredUser(); 
-      
+      allow list: if isRegisteredUser();
+
       allow create: if isRegisteredUser() &&
                        isValidId(photoId) &&
                        isValidPhoto(incoming());
-                       
+
+      // Owners can edit their photo; everyone else may only touch
+      // comments and reactions
       allow update: if isRegisteredUser() &&
-                       incoming().id == existing().id; // allow anyone registered to add comments/reactions
-                       
+                       incoming().id == existing().id &&
+                       incoming().userId == existing().userId &&
+                       (existing().userId == request.auth.uid ||
+                        incoming().diff(existing()).affectedKeys().hasOnly(['comments', 'reactions']));
+
       allow delete: if isRegisteredUser() && existing().userId == request.auth.uid;
     }
 
     match /nudges/{nudgeId} {
-      allow read: if isRegisteredUser();
-      allow write: if isRegisteredUser();
+      allow read: if isRegisteredUser() && existing().toUserId == request.auth.uid;
+
+      allow create: if isRegisteredUser() &&
+                       incoming().keys().hasOnly(['fromUserId', 'fromUserName', 'toUserId', 'hourKey', 'timestamp']) &&
+                       incoming().fromUserId == request.auth.uid &&
+                       incoming().fromUserName is string && incoming().fromUserName.size() <= 50 &&
+                       incoming().toUserId is string && incoming().toUserId.size() <= 128;
+
+      allow delete: if isRegisteredUser() && existing().toUserId == request.auth.uid;
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isRegisteredUser() && existing().toUserId == request.auth.uid;
+
+      allow create: if isRegisteredUser() &&
+                       incoming().keys().hasOnly(['toUserId', 'fromUserName', 'photoId', 'text', 'type', 'timestamp']) &&
+                       incoming().toUserId is string && incoming().toUserId.size() <= 128 &&
+                       incoming().fromUserName is string && incoming().fromUserName.size() <= 50 &&
+                       incoming().text is string && incoming().text.size() <= 1000 &&
+                       incoming().type in ['comment', 'mention'];
+
+      allow delete: if isRegisteredUser() && existing().toUserId == request.auth.uid;
     }
   }
 }
