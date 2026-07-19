@@ -1,0 +1,81 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    
+    function incoming() {
+      return request.resource.data;
+    }
+    
+    function existing() {
+      return resource.data;
+    }
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isRegisteredUser() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+    
+    function isValidUser(data) {
+      return data.keys().hasAll(['id', 'name', 'email', 'timezone']) &&
+             data.keys().size() >= 4 && data.keys().size() <= 5 &&
+             data.id is string && data.id.size() <= 128 && data.id == request.auth.uid &&
+             data.name is string && data.name.size() <= 50 &&
+             data.email is string && data.email.size() <= 100 &&
+             data.timezone is string && data.timezone.size() <= 50 &&
+             (!('lastActive' in data.keys()) || (data.lastActive is string && data.lastActive.size() <= 50));
+    }
+    
+    match /users/{userId} {
+      allow get: if isSignedIn();
+      allow list: if isSignedIn();
+      
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       userId == request.auth.uid &&
+                       isValidUser(incoming());
+                       
+      allow update: if isSignedIn() &&
+                       userId == request.auth.uid &&
+                       isValidUser(incoming()) &&
+                       incoming().id == existing().id &&
+                       incoming().email == existing().email;
+    }
+    
+    function isValidPhoto(data) {
+      return data.keys().hasAll(['id', 'userId', 'timestamp', 'imageUrl']) &&
+             data.keys().size() >= 4 && data.keys().size() <= 5 &&
+             data.id is string && data.id.size() <= 128 &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.timestamp is string && data.timestamp.size() <= 50 &&
+             data.imageUrl is string && data.imageUrl.size() <= 500 &&
+             (!('metadata' in data.keys()) || (data.metadata is map && data.metadata.keys().hasAll(['temperature', 'noiseLevel']) && data.metadata.keys().size() == 2 && data.metadata.temperature is number && data.metadata.noiseLevel is number));
+    }
+    
+    match /photos/{photoId} {
+      allow get: if isRegisteredUser();
+      allow list: if isRegisteredUser(); 
+      
+      allow create: if isRegisteredUser() &&
+                       isValidId(photoId) &&
+                       isValidPhoto(incoming());
+                       
+      allow update: if isRegisteredUser() &&
+                       existing().userId == request.auth.uid &&
+                       isValidPhoto(incoming()) &&
+                       incoming().id == existing().id &&
+                       incoming().userId == existing().userId;
+                       
+      allow delete: if isRegisteredUser() && existing().userId == request.auth.uid;
+    }
+  }
+}

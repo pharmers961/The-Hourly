@@ -1,0 +1,6 @@
+{
+  "name": "The Hourly",
+  "description": "A chic, synchronized hourly photo sharing app for siblings.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

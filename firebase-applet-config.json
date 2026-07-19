@@ -1,0 +1,12 @@
+{
+  "projectId": "the-hourly",
+  "appId": "1:145753936168:web:001cf84f3f16b146b7c01d",
+  "apiKey": "AIzaSyDRP2W4Fm2FH8sJ_-eVvNSZEXtLFmEk7BM",
+  "authDomain": "the-hourly.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-thehourly-530ce651-c22d-48f3-af78-3cb6c4e2b873",
+  "storageBucket": "the-hourly.firebasestorage.app",
+  "messagingSenderId": "145753936168",
+  "measurementId": "",
+  "oAuthClientId": "145753936168-q5irmqevavoo0evdtqulb61fueh2d5kp.apps.googleusercontent.com",
+  "recaptchaSiteKey": ""
+}
