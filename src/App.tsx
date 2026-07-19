@@ -399,9 +399,10 @@ export default function App() {
   );
 
   const selectedGroup = useMemo(() => groups.find(g => g.id === selectedGroupId) || null, [groups, selectedGroupId]);
-  // Everyone in a group is an admin: any member can rename, manage the invite
-  // link, remove members, and delete the group.
+  // Every member is an admin (rename, invite, remove members). Deleting the
+  // whole group and transferring the creator role are reserved for the creator.
   const canAdmin = !!selectedGroup;
+  const isOwner = selectedGroup?.role === 'owner';
 
   useEffect(() => {
     if (showSettings && user) {
@@ -880,8 +881,47 @@ export default function App() {
     }
   };
 
+  const handleTransferOwnership = async (memberId: string) => {
+    if (!selectedGroup) return;
+    const memberName = users[memberId]?.name || 'this member';
+    if (!window.confirm(`Make ${memberName} the creator of "${selectedGroup.name}"? They'll be able to delete the group; you'll become a regular member.`)) return;
+    try {
+      await api.transferOwnership(selectedGroup.id, memberId);
+      await refreshGroups();
+      const roles = await api.fetchGroupMemberRoles(selectedGroup.id);
+      setGroupMemberRoles(roles);
+      showToast('Creator role transferred', 'success');
+    } catch (err) {
+      console.error('Failed to transfer ownership:', err);
+      showToast('Failed to transfer creator role. Please try again.');
+    }
+  };
+
   const handleLeaveGroup = async () => {
     if (!selectedGroup || !user) return;
+
+    // The creator can't just leave and orphan the group: they must either
+    // hand the role to someone else first, or delete the group.
+    if (isOwner) {
+      const otherMembers = groupMemberRoles.filter(m => m.profileId !== user.uid);
+      if (otherMembers.length > 0) {
+        showToast('As the creator, transfer the creator role to another member first, or delete the group.');
+        return;
+      }
+      // Sole member: leaving means deleting the (now-empty) group
+      if (!window.confirm(`You're the only member of "${selectedGroup.name}". Leaving will delete it. Continue?`)) return;
+      try {
+        await api.deleteGroup(selectedGroup.id);
+        setShowSettings(false);
+        await refreshGroups();
+        showToast('Left and deleted group', 'success');
+      } catch (err) {
+        console.error('Failed to delete group on leave:', err);
+        showToast('Failed to leave group. Please try again.');
+      }
+      return;
+    }
+
     if (!window.confirm(`Leave "${selectedGroup.name}"? You'll lose access to its photos.`)) return;
     try {
       await api.removeGroupMember(selectedGroup.id, user.uid);
@@ -1888,16 +1928,25 @@ export default function App() {
 
                   <div className="flex flex-col gap-1">
                     {groupMemberRoles.map(m => (
-                      <div key={m.profileId} className="flex items-center justify-between font-sans text-sm py-1">
-                        <span>
+                      <div key={m.profileId} className="flex items-center justify-between font-sans text-sm py-1 gap-2">
+                        <span className="truncate">
                           {users[m.profileId]?.name || 'Unknown'}
                           {m.role === 'owner' && <span className="opacity-40 text-[10px] uppercase ml-2">Creator</span>}
                         </span>
-                        {canAdmin && m.profileId !== user.uid && (
-                          <button onClick={() => handleRemoveMember(m.profileId)} className="text-red-600 opacity-60 hover:opacity-100 transition-opacity" aria-label="Remove member">
-                            <X size={14} />
-                          </button>
-                        )}
+                        <div className="flex items-center gap-3 shrink-0">
+                          {/* Only the creator can hand off the role */}
+                          {isOwner && m.profileId !== user.uid && (
+                            <button onClick={() => handleTransferOwnership(m.profileId)} className="font-sans text-[9px] uppercase tracking-widest opacity-50 hover:opacity-100 transition-opacity">
+                              Make Creator
+                            </button>
+                          )}
+                          {/* Admins can remove any non-creator member (not themselves) */}
+                          {canAdmin && m.profileId !== user.uid && m.role !== 'owner' && (
+                            <button onClick={() => handleRemoveMember(m.profileId)} className="text-red-600 opacity-60 hover:opacity-100 transition-opacity" aria-label="Remove member">
+                              <X size={14} />
+                            </button>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -1907,10 +1956,13 @@ export default function App() {
                       <LogOut size={14} />
                       <span>Leave Group</span>
                     </button>
-                    <button onClick={handleDeleteGroup} className="flex items-center gap-2 text-sm text-red-600 opacity-80 hover:opacity-100 transition-colors w-fit">
-                      <Trash2 size={14} />
-                      <span>Delete Group</span>
-                    </button>
+                    {/* Deleting the whole group is creator-only */}
+                    {isOwner && (
+                      <button onClick={handleDeleteGroup} className="flex items-center gap-2 text-sm text-red-600 opacity-80 hover:opacity-100 transition-colors w-fit">
+                        <Trash2 size={14} />
+                        <span>Delete Group</span>
+                      </button>
+                    )}
                   </div>
                 </div>
               )}

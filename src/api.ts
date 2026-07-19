@@ -199,10 +199,16 @@ export async function regenerateInviteCode(groupId: string): Promise<string> {
   return data as string;
 }
 
-// Used both to leave a group yourself and, if you're the owner, to remove
-// someone else — the security policy decides which is allowed.
+// Used both to leave a group yourself and, as an admin, to remove another
+// (non-creator) member — the security policy decides which is allowed.
 export async function removeGroupMember(groupId: string, profileId: string): Promise<void> {
   const { error } = await supabase.from('group_members').delete().eq('group_id', groupId).eq('profile_id', profileId);
+  if (error) throw error;
+}
+
+// Creator-only: hand the creator role to another member.
+export async function transferOwnership(groupId: string, newOwnerProfileId: string): Promise<void> {
+  const { error } = await supabase.rpc('transfer_ownership', { p_group_id: groupId, p_new_owner: newOwnerProfileId });
   if (error) throw error;
 }
 

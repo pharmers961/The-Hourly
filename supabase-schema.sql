@@ -268,6 +268,33 @@ begin
 end;
 $$;
 
+-- Creator-only: hand the creator role to another member (the caller becomes a
+-- regular member). Used when the creator wants to leave without deleting the
+-- group.
+create or replace function public.transfer_ownership(p_group_id uuid, p_new_owner uuid)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_me uuid := public.my_profile_id();
+begin
+  if not exists (
+    select 1 from group_members
+    where group_id = p_group_id and profile_id = v_me and role = 'owner'
+  ) then
+    raise exception 'Only the group creator can transfer the creator role.';
+  end if;
+  if not exists (
+    select 1 from group_members where group_id = p_group_id and profile_id = p_new_owner
+  ) then
+    raise exception 'That person is not a member of this group.';
+  end if;
+
+  update group_members set role = 'member' where group_id = p_group_id and profile_id = v_me;
+  update group_members set role = 'owner' where group_id = p_group_id and profile_id = p_new_owner;
+end;
+$$;
+
 -- ---------------------------------------------------------------------------
 -- Row-level security
 -- ---------------------------------------------------------------------------
@@ -306,17 +333,19 @@ drop policy if exists "groups read" on public.groups;
 create policy "groups read" on public.groups
   for select to authenticated using (public.is_group_member(id));
 
--- Everyone in a group is an admin: any member can rename or delete the group
--- and remove members.
+-- Every member is an admin (rename, invite, remove members), EXCEPT deleting
+-- the whole group, which is reserved for the creator (role = 'owner').
 drop policy if exists "groups update owner" on public.groups;
 drop policy if exists "groups update member" on public.groups;
 create policy "groups update member" on public.groups
   for update to authenticated using (public.is_group_member(id));
 
-drop policy if exists "groups delete owner" on public.groups;
 drop policy if exists "groups delete member" on public.groups;
-create policy "groups delete member" on public.groups
-  for delete to authenticated using (public.is_group_member(id));
+drop policy if exists "groups delete owner" on public.groups;
+create policy "groups delete owner" on public.groups
+  for delete to authenticated using (
+    exists (select 1 from group_members gm where gm.group_id = id and gm.profile_id = public.my_profile_id() and gm.role = 'owner')
+  );
 
 drop policy if exists "group_members read" on public.group_members;
 create policy "group_members read" on public.group_members
@@ -325,8 +354,10 @@ create policy "group_members read" on public.group_members
 drop policy if exists "group_members delete" on public.group_members;
 create policy "group_members delete" on public.group_members
   for delete to authenticated using (
-    -- leave yourself, or (as an admin) remove anyone else in a group you're in
-    public.is_group_member(group_id)
+    -- leave yourself (any role), or (as an admin) remove any non-creator member;
+    -- the creator's row can't be kicked by others — they must transfer or delete
+    profile_id = public.my_profile_id()
+    or (role <> 'owner' and public.is_group_member(group_id))
   );
 
 drop policy if exists "photos read" on public.photos;
