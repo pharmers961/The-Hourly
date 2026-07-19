@@ -180,6 +180,15 @@ as $$
   )
 $$;
 
+-- Diagnostic only: reports what the caller's session actually resolves to,
+-- so a failed write can be compared against what was attempted.
+create or replace function public.debug_whoami()
+returns table(auth_uid uuid, resolved_profile_id uuid, resolved_email text)
+language sql stable security definer set search_path = public
+as $$
+  select auth.uid(), public.my_profile_id(), (select email from profiles where id = public.my_profile_id())
+$$;
+
 -- A photo is visible to its uploader, or to anyone in a group it's been
 -- shared into.
 create or replace function public.can_view_photo(p_photo_id uuid)

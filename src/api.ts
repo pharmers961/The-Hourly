@@ -49,7 +49,7 @@ interface GroupRow {
 // their shape differs between the storage client and PostgREST client;
 // surface everything present so failures are diagnosable from the toast text
 // alone, without needing devtools access.
-function describeError(prefix: string, err: unknown): Error {
+function describeError(prefix: string, err: unknown, extra = ''): Error {
   if (err && typeof err === 'object') {
     const parts: string[] = [];
     const anyErr = err as Record<string, unknown>;
@@ -59,9 +59,9 @@ function describeError(prefix: string, err: unknown): Error {
     if (typeof anyErr.code === 'string') parts.push(`code=${anyErr.code}`);
     if (typeof anyErr.hint === 'string') parts.push(`hint=${anyErr.hint}`);
     if (typeof anyErr.details === 'string') parts.push(`details=${anyErr.details}`);
-    if (parts.length > 0) return new Error(`${prefix}: ${parts.join(' | ')}`);
+    if (parts.length > 0) return new Error(`${prefix}: ${parts.join(' | ')}${extra}`);
   }
-  return new Error(`${prefix}: ${String(err)}`);
+  return new Error(`${prefix}: ${String(err)}${extra}`);
 }
 
 function mapProfileRow(row: ProfileRow): AppUser {
@@ -294,12 +294,32 @@ export async function uploadPhotoToGroups(profileId: string, imageBlob: Blob, me
   });
   if (uploadError) throw describeError('storage upload failed', uploadError);
 
+  // Force a fresh, valid session right before the write: geolocation +
+  // weather lookups upstream of this call can take several seconds, and if
+  // a background token refresh lands mid-capture, this is the request most
+  // likely to catch a stale token.
+  await supabase.auth.getSession();
+
   const { data: photoRow, error: insertError } = await supabase
     .from('photos')
     .insert({ profile_id: profileId, taken_at: new Date().toISOString(), image_path: path, metadata })
     .select('id')
     .single();
-  if (insertError) throw describeError('photo insert failed', insertError);
+  if (insertError) {
+    // RLS violation on an insert that should always be self-consistent
+    // (profile_id is the caller's own id) — pull what the session actually
+    // resolves to server-side so the mismatch, if any, is visible in the
+    // error itself rather than requiring another round of guessing.
+    let whoami = '';
+    try {
+      const { data } = await supabase.rpc('debug_whoami');
+      const row = Array.isArray(data) ? data[0] : data;
+      if (row) whoami = ` | attempted profile_id=${profileId} auth_uid=${row.auth_uid} resolved_profile_id=${row.resolved_profile_id} resolved_email=${row.resolved_email}`;
+    } catch {
+      // best-effort only
+    }
+    throw describeError('photo insert failed', insertError, whoami);
+  }
 
   const { error: linkError } = await supabase
     .from('photo_groups')
