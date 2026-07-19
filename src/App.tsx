@@ -19,8 +19,6 @@ export default function App() {
   const [loginEmail, setLoginEmail] = useState('');
   const [magicLinkSent, setMagicLinkSent] = useState(false);
   const [isSendingLink, setIsSendingLink] = useState(false);
-  const [isMigrating, setIsMigrating] = useState(false);
-  const [migrateStatus, setMigrateStatus] = useState('');
   const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
   const [showPhotoInfo, setShowPhotoInfo] = useState(false);
   const [isNudging, setIsNudging] = useState(false);
@@ -775,38 +773,6 @@ export default function App() {
     } catch (err) {
       console.error('Failed to delete account:', err);
       showToast(`Failed to delete account${errDetail(err)}`);
-    }
-  };
-
-  const handleMigrateFromFirebase = async () => {
-    if (isMigrating) return;
-    const serviceRoleKey = window.prompt(
-      'One-time admin action: paste your Supabase service_role secret key ' +
-      '(Project Settings → API → service_role secret).\n\n' +
-      'This bypasses your row-level security policies so old Firebase photos can be ' +
-      'imported. It is used only for this one action, held in memory in your browser, ' +
-      'and is never saved, logged, or sent anywhere else.'
-    );
-    if (!serviceRoleKey) return;
-
-    setIsMigrating(true);
-    setMigrateStatus('Starting...');
-    try {
-      const summary = await api.migrateFromFirebase(setMigrateStatus, serviceRoleKey.trim());
-      // The import may have corrected this user's own name/timezone, and
-      // adds everyone to the legacy "Sibs and Sigs" group
-      const refreshedProfile = await api.ensureProfile(Intl.DateTimeFormat().resolvedOptions().timeZone).catch(() => null);
-      if (refreshedProfile) setProfile(refreshedProfile);
-      await refreshGroups();
-      await refreshData();
-      showToast(summary, 'success');
-    } catch (err) {
-      console.error('Firebase import failed:', err);
-      const detail = err instanceof Error && err.message ? `: ${err.message.slice(0, 300)}` : '. Please try again.';
-      showToast(`Import failed${detail}`);
-    } finally {
-      setIsMigrating(false);
-      setMigrateStatus('');
     }
   };
 
@@ -2041,10 +2007,6 @@ export default function App() {
                   <button onClick={handleExportCollage} disabled={isGeneratingCollage} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity disabled:opacity-30 w-fit">
                     <ImageIcon size={14} />
                     <span>{isGeneratingCollage ? 'Exporting...' : 'Export Collage Image'}</span>
-                  </button>
-                  <button onClick={handleMigrateFromFirebase} disabled={isMigrating} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity disabled:opacity-30 w-fit">
-                    <Download size={14} className={isMigrating ? 'animate-pulse' : ''} />
-                    <span>{isMigrating ? (migrateStatus || 'Importing...') : 'Import Photos from Firebase'}</span>
                   </button>
                 </div>
 
