@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, Info, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon, Maximize, Clock } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import html2canvas from 'html2canvas';
-import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImage, getRelativeTime } from './utils';
+import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImage, getRelativeTime, extractExifGps } from './utils';
 import { db, auth } from './firebase';
 import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
 import { collection, query, onSnapshot, setDoc, doc, doc as firestoreDoc, getDoc, serverTimestamp, writeBatch, where, addDoc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
@@ -262,9 +262,11 @@ export default function App() {
   }, [photos]);
 
   const getSiblingLocation = (sibling: AppUser) => {
-    if (sibling.settings?.displayLocation) return sibling.settings.displayLocation;
-    const latestPhoto = sortedPhotos.find(p => p.userId === sibling.id && p.metadata?.location);
+    // The most recent photo's GPS location wins, so the header tracks where
+    // each user actually last captured a moment.
+    const latestPhoto = sortedPhotos.find(p => p.userId === sibling.id && p.metadata?.location && p.metadata.location !== 'Unknown Location');
     if (latestPhoto && latestPhoto.metadata?.location) return latestPhoto.metadata.location;
+    if (sibling.settings?.displayLocation) return sibling.settings.displayLocation;
     return sibling.timezone.split('/').pop()?.replace(/_/g, ' ');
   };
 
@@ -441,7 +443,10 @@ export default function App() {
     try {
       const compressedImageUrl = await compressImage(file);
       const userDisplayLocation = activeUsers.find(u => u.id === user.uid)?.settings?.displayLocation;
-      const metadata = await fetchEnvironmentalMetadata(userDisplayLocation || undefined);
+      // Prefer the GPS coordinates embedded in the photo itself; fall back to
+      // the device's current position inside fetchEnvironmentalMetadata.
+      const exifCoords = await extractExifGps(file);
+      const metadata = await fetchEnvironmentalMetadata(userDisplayLocation || undefined, exifCoords || undefined);
       const photoId = `p${Date.now()}`;
       const newPhoto = {
         id: photoId,
@@ -782,21 +787,26 @@ export default function App() {
           <div className="sticky top-0 z-20 bg-[#F9F8F5] pt-6 grid gap-4 mb-4 border-b-[0.5px] border-[#1A1A1A] pb-2 print:relative print:bg-white print:border-black print:pt-4" style={gridStyle}>
             <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end hidden md:block print:bg-white print:text-black">Hour / Slot</div>
             <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end md:hidden print:hidden">Time</div>
-            {activeUsers.map(sibling => (
-              <div key={sibling.id} className="text-center">
-                <div className="flex flex-col items-center justify-center gap-1 relative w-fit mx-auto">
-                  <span className="block text-sm md:text-lg font-normal print:text-black leading-tight">
-                    {sibling.name.split(' ')[0]}
-                    {sibling.name.split(' ').length > 1 && <br />}
-                    {sibling.name.split(' ').slice(1).join(' ')}
+            {activeUsers.map(sibling => {
+              // Split on any whitespace (incl. non-breaking spaces) so every
+              // name renders as first name over last name.
+              const nameParts = sibling.name.trim().split(/\s+/);
+              return (
+                <div key={sibling.id} className="flex flex-col items-center text-center">
+                  <div className="relative w-fit">
+                    <span className="block text-sm md:text-lg font-normal print:text-black leading-tight">
+                      {nameParts[0]}
+                      {nameParts.length > 1 && <br />}
+                      {nameParts.slice(1).join(' ')}
+                    </span>
+                    <div className={`absolute -right-2 top-0 w-1.5 h-1.5 md:w-2 md:h-2 rounded-full transition-colors duration-1000 print:hidden ${isSiblingOnline(sibling.id, sibling.name) ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-[#1A1A1A] opacity-20'}`} />
+                  </div>
+                  <span className="font-sans text-[8px] md:text-[9px] uppercase opacity-40 tracking-tighter truncate block max-w-full px-1 print:text-black print:opacity-60 mt-1">
+                    {getSiblingLocation(sibling)}
                   </span>
-                  <div className={`absolute -right-2 top-0 w-1.5 h-1.5 md:w-2 md:h-2 rounded-full transition-colors duration-1000 print:hidden ${isSiblingOnline(sibling.id, sibling.name) ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-[#1A1A1A] opacity-20'}`} />
                 </div>
-                <span className="font-sans text-[8px] md:text-[9px] uppercase opacity-40 tracking-tighter truncate block px-1 print:text-black print:opacity-60 mt-1">
-                  {getSiblingLocation(sibling)}
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Content area */}
