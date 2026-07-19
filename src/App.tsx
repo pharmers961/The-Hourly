@@ -421,26 +421,42 @@ export default function App() {
     if (!user) return;
     try {
       const userRef = doc(db, 'users', user.uid);
-      const currentUserData = Object.values(users).find(u => u.uid === user.uid) as any;
+      const currentUserData = users[user.uid] as any;
       const newSettings = { ...(currentUserData?.settings || { temperatureUnit: 'C', timeFormat: '12h' }), ...updates };
-      await updateDoc(userRef, { settings: newSettings });
+      
+      // Optimistic update
+      setUsers(prev => ({
+        ...prev,
+        [user.uid]: {
+          ...prev[user.uid],
+          settings: newSettings
+        }
+      }));
+
+      await setDoc(userRef, { settings: newSettings }, { merge: true });
     } catch (err) {
       console.error('Failed to save settings:', err);
     }
   };
 
-  const handleClearAllPhotos = async () => {
-    if (!window.confirm('Are you sure you want to delete all your photos? This cannot be undone.')) return;
+  const handleAccountDeletion = async () => {
+    if (!user) return;
+    if (!window.confirm('Are you sure you want to delete your account and all your photos? This cannot be undone.')) return;
     
     try {
       const batch = writeBatch(db);
-      // Only delete photos belonging to this user
-      photos.filter(p => p.userId === user?.uid).forEach(photo => {
+      // Delete photos belonging to this user
+      photos.filter(p => p.userId === user.uid).forEach(photo => {
         batch.delete(doc(db, 'photos', photo.id));
       });
+      // Delete user profile
+      batch.delete(doc(db, 'users', user.uid));
+      
       await batch.commit();
+      await signOut(auth);
+      setShowSettings(false);
     } catch (err) {
-      console.error('Failed to clear photos:', err);
+      console.error('Failed to delete account:', err);
     }
   };
 
@@ -605,63 +621,16 @@ export default function App() {
         <div className="text-left md:text-right">
           <div className="font-sans text-[11px] uppercase tracking-widest flex items-center justify-start md:justify-end gap-4 mb-2 print:hidden">
             {!isAuthLoading && user && (
-              <>
-                <button onClick={() => setShowSettings(true)} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
-                  <Settings size={12} />
-                  <span className="hidden md:inline">Settings</span>
-                </button>
-                <div className="flex items-center gap-1 opacity-60">
-                  <Globe size={12} />
-                  <select 
-                    value={referenceTimezone}
-                    onChange={(e) => setReferenceTimezone(e.target.value)}
-                    className="bg-transparent border-b border-[#1A1A1A] outline-none cursor-pointer max-w-[120px]"
-                  >
-                    <option value="">Local Time</option>
-                    <optgroup label="Family">
-                      {activeUsers.map(s => (
-                        <option key={s.id} value={s.timezone}>{s.name}'s Time</option>
-                      ))}
-                    </optgroup>
-                    <optgroup label="Global">
-                      {STANDARD_TIMEZONES.map(tz => (
-                        <option key={tz.value} value={tz.value}>{tz.label}</option>
-                      ))}
-                    </optgroup>
-                  </select>
-                </div>
-                <button onClick={() => window.print()} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
-                  <Download size={12} />
-                  <span className="hidden md:inline">Chronicle PDF</span>
-                </button>
-                {notificationPermission === 'default' && (
-                  <button onClick={requestNotificationPermission} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity text-[#C5A059]">
-                    <Bell size={12} />
-                    <span className="hidden md:inline">Enable Alerts</span>
-                  </button>
-                )}
-                <button onClick={handleClearAllPhotos} className="flex items-center gap-1 opacity-60 hover:text-red-600 hover:opacity-100 transition-colors">
-                  <Trash2 size={12} />
-                  <span className="hidden md:inline">Clear My Photos</span>
-                </button>
-                <button onClick={handleNudge} disabled={isNudging} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30">
-                  <Bell size={12} className={isNudging ? 'animate-bounce' : ''} />
-                  <span>Nudge</span>
-                </button>
-              </>
+              <button onClick={() => setShowSettings(true)} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
+                <Settings size={12} />
+                <span className="hidden md:inline">Settings</span>
+              </button>
             )}
-            {!isAuthLoading && (
-              user ? (
-                <button onClick={handleLogout} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
-                  <LogOut size={12} />
-                  <span className="hidden md:inline">Logout</span>
-                </button>
-              ) : (
-                <button onClick={handleLogin} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
-                  <LogIn size={12} />
-                  <span>Login</span>
-                </button>
-              )
+            {!isAuthLoading && !user && (
+              <button onClick={handleLogin} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
+                <LogIn size={12} />
+                <span>Login</span>
+              </button>
             )}
           </div>
           <div className="text-2xl font-light print:text-black">
@@ -773,7 +742,7 @@ export default function App() {
       </main>
 
       {/* Floating Action Button */}
-      {user && (
+      {user && !timeSlots[0]?.photos?.[user.uid] && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 print:hidden">
           <input 
             type="file" 
@@ -1019,7 +988,7 @@ export default function App() {
       {/* Settings Modal */}
       {showSettings && user && (
         <div className="fixed inset-0 z-[200] bg-black/40 flex items-center justify-center p-4">
-          <div className="bg-[#F9F8F5] p-6 md:p-10 w-full max-w-md shadow-2xl relative animate-in fade-in zoom-in-95 duration-200 border-[0.5px] border-[#1A1A1A]">
+          <div className="bg-[#F9F8F5] p-6 md:p-10 w-full max-w-md max-h-[90vh] overflow-y-auto shadow-2xl relative animate-in fade-in zoom-in-95 duration-200 border-[0.5px] border-[#1A1A1A]">
             <button 
               onClick={() => setShowSettings(false)}
               className="absolute top-4 right-4 opacity-60 hover:opacity-100 transition-opacity"
@@ -1086,6 +1055,63 @@ export default function App() {
                     />
                     24-hour
                   </label>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <label className="font-sans text-[10px] uppercase tracking-widest opacity-60">Reference Timezone</label>
+                <div className="flex items-center gap-2 font-sans text-sm">
+                  <Globe size={14} className="opacity-60" />
+                  <select 
+                    value={referenceTimezone}
+                    onChange={(e) => setReferenceTimezone(e.target.value)}
+                    className="bg-transparent border-b-[0.5px] border-[#1A1A1A] outline-none cursor-pointer w-full py-1"
+                  >
+                    <option value="">Local Time</option>
+                    <optgroup label="Family">
+                      {activeUsers.map(s => (
+                        <option key={s.id} value={s.timezone}>{s.name}'s Time</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Global">
+                      {STANDARD_TIMEZONES.map(tz => (
+                        <option key={tz.value} value={tz.value}>{tz.label}</option>
+                      ))}
+                    </optgroup>
+                  </select>
+                </div>
+              </div>
+
+              <div className="pt-6 border-t-[0.5px] border-[#1A1A1A] flex flex-col gap-4">
+                <div className="flex flex-col gap-3">
+                  <button onClick={handleNudge} disabled={isNudging} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity disabled:opacity-30 w-fit">
+                    <Bell size={14} className={isNudging ? 'animate-bounce text-[#C5A059]' : ''} />
+                    <span>Send Nudge to Family</span>
+                  </button>
+
+                  {notificationPermission === 'default' && (
+                    <button onClick={requestNotificationPermission} className="flex items-center gap-2 text-sm text-[#C5A059] hover:opacity-100 transition-opacity w-fit">
+                      <Bell size={14} />
+                      <span>Enable Browser Alerts</span>
+                    </button>
+                  )}
+
+                  <button onClick={() => window.print()} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity w-fit">
+                    <Download size={14} />
+                    <span>Download Chronicle PDF</span>
+                  </button>
+                </div>
+
+                <div className="flex flex-col gap-3 pt-4">
+                  <button onClick={handleLogout} className="flex items-center gap-2 text-sm opacity-60 hover:opacity-100 transition-opacity w-fit">
+                    <LogOut size={14} />
+                    <span>Logout</span>
+                  </button>
+
+                  <button onClick={handleAccountDeletion} className="flex items-center gap-2 text-sm text-red-600 opacity-80 hover:opacity-100 transition-colors w-fit">
+                    <Trash2 size={14} />
+                    <span>Delete My Account & Photos</span>
+                  </button>
                 </div>
               </div>
             </div>
