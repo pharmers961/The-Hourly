@@ -480,12 +480,22 @@ begin
   end if;
 
   if exists (select 1 from groups where id = v_group_id) then
+    -- Scoped to firebase_uid is not null: only profiles that came from the
+    -- original pre-groups Firebase family. Without this filter, ANY future
+    -- signup (e.g. a friend joining an unrelated group) would get swept
+    -- into this legacy group too, since it would just be another row in
+    -- `profiles` with no other marker distinguishing it.
     insert into group_members (group_id, profile_id, role)
     select v_group_id, id, 'member' from profiles
+    where firebase_uid is not null
     on conflict (group_id, profile_id) do nothing;
 
+    -- Only photos with zero group links at all (true pre-groups orphans) —
+    -- never touch a photo that was deliberately shared to a specific group
     insert into photo_groups (photo_id, group_id)
-    select id, v_group_id from photos
+    select p.id, v_group_id from photos p
+    where not exists (select 1 from photo_groups pg where pg.photo_id = p.id)
+      and (p.firebase_id is not null or p.profile_id in (select id from profiles where firebase_uid is not null))
     on conflict (photo_id, group_id) do nothing;
   end if;
 end $$;
