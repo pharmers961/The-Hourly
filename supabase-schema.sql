@@ -444,8 +444,19 @@ create policy "notifications delete own" on public.notifications
   for delete to authenticated using (to_profile_id = public.my_profile_id());
 
 -- ---------------------------------------------------------------------------
--- One-time: migrate pre-groups data into a single "Sibs and Sigs" group so
--- nothing already shared disappears. Uses a fixed id so it's safe to re-run.
+-- Migrate pre-groups data into a single "Sibs and Sigs" group so nothing
+-- already shared disappears. Uses a fixed id so it's safe to re-run.
+--
+-- The group + its creator are only set up once (first branch below), but
+-- the membership/photo backfill runs on EVERY execution, not just the
+-- first. That matters because people and photos keep getting added over
+-- time (a family member signing in for the first time and claiming their
+-- placeholder profile, an extra Firebase import, ordinary captures made
+-- before this script's most recent run) — without an always-on backfill,
+-- anyone/anything added after the very first run would silently never
+-- join the group. Note: if someone has deliberately used "Leave Group" on
+-- this specific group, re-running this script will add them back — that's
+-- an accepted tradeoff for this migration helper.
 -- ---------------------------------------------------------------------------
 
 do $$
@@ -464,14 +475,18 @@ begin
       values (v_group_id, 'Sibs and Sigs', generate_invite_code(), v_owner_id);
 
       insert into group_members (group_id, profile_id, role)
-      select v_group_id, id, case when id = v_owner_id then 'owner' else 'member' end
-      from profiles
-      on conflict (group_id, profile_id) do nothing;
-
-      insert into photo_groups (photo_id, group_id)
-      select id, v_group_id from photos
-      on conflict (photo_id, group_id) do nothing;
+      values (v_group_id, v_owner_id, 'owner');
     end if;
+  end if;
+
+  if exists (select 1 from groups where id = v_group_id) then
+    insert into group_members (group_id, profile_id, role)
+    select v_group_id, id, 'member' from profiles
+    on conflict (group_id, profile_id) do nothing;
+
+    insert into photo_groups (photo_id, group_id)
+    select id, v_group_id from photos
+    on conflict (photo_id, group_id) do nothing;
   end if;
 end $$;
 
