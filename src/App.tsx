@@ -4,7 +4,7 @@ import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import html2canvas from 'html2canvas';
 import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImage, getRelativeTime, extractExifGps } from './utils';
 import { db, auth } from './firebase';
-import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
+import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, deleteUser, User as FirebaseUser } from 'firebase/auth';
 import { collection, query, onSnapshot, setDoc, doc, doc as firestoreDoc, getDoc, serverTimestamp, writeBatch, where, addDoc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { Photo, User as AppUser } from './types';
 
@@ -27,7 +27,14 @@ export default function App() {
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [isGeneratingCollage, setIsGeneratingCollage] = useState(false);
   const [isFullscreenPhoto, setIsFullscreenPhoto] = useState(false);
+  const [toasts, setToasts] = useState<{ id: number; message: string; type: 'error' | 'success' }[]>([]);
   const collageRef = useRef<HTMLDivElement>(null);
+
+  const showToast = (message: string, type: 'error' | 'success' = 'error') => {
+    const id = Date.now() + Math.random();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+  };
 
   const initialPhotoLoaded = useRef(false);
   const lastNotifiedHour = useRef<number | null>(null);
@@ -437,6 +444,7 @@ export default function App() {
       await signInWithPopup(auth, provider);
     } catch (error) {
       console.error('Login failed:', error);
+      showToast('Sign in failed. Please try again.');
     }
   };
 
@@ -466,10 +474,12 @@ export default function App() {
       });
       
       await batch.commit();
+      showToast('Nudge sent', 'success');
     } catch (err) {
       console.error('Failed to send nudges:', err);
+      showToast('Failed to send nudge. Please try again.');
     }
-    
+
     setTimeout(() => setIsNudging(false), 2000);
   };
 
@@ -506,8 +516,10 @@ export default function App() {
       };
       
       await setDoc(doc(db, 'photos', photoId), newPhoto);
+      showToast('Moment captured', 'success');
     } catch (err) {
       console.error('Capture error:', err);
+      showToast('Photo failed to upload. Please try again.');
     } finally {
       setIsCapturing(false);
       if (fileInputRef.current) {
@@ -535,27 +547,72 @@ export default function App() {
       await setDoc(userRef, { settings: newSettings }, { merge: true });
     } catch (err) {
       console.error('Failed to save settings:', err);
+      showToast('Failed to save settings. Please try again.');
     }
   };
 
   const handleAccountDeletion = async () => {
     if (!user) return;
-    if (!window.confirm('Are you sure you want to delete your account and all your photos? This cannot be undone.')) return;
-    
+    if (!window.confirm('Are you sure you want to delete your account, all your photos, and your comments and reactions? This cannot be undone.')) return;
+
     try {
-      const batch = writeBatch(db);
-      // Delete photos belonging to this user
-      photos.filter(p => p.userId === user.uid).forEach(photo => {
-        batch.delete(doc(db, 'photos', photo.id));
+      type Op = { type: 'delete'; ref: ReturnType<typeof doc> } | { type: 'update'; ref: ReturnType<typeof doc>; data: Record<string, unknown> };
+      const ops: Op[] = [];
+
+      photos.forEach(photo => {
+        if (photo.userId === user.uid) {
+          ops.push({ type: 'delete', ref: doc(db, 'photos', photo.id) });
+          return;
+        }
+        // Scrub this user's comments and reactions from other people's photos
+        const remainingComments = (photo.comments || []).filter(c => c.userId !== user.uid);
+        const hadComments = remainingComments.length !== (photo.comments || []).length;
+        const remainingReactions: Record<string, string[]> = {};
+        let hadReactions = false;
+        Object.entries<string[]>(photo.reactions || {}).forEach(([emoji, uids]) => {
+          const rest = uids.filter(id => id !== user.uid);
+          if (rest.length < uids.length) hadReactions = true;
+          if (rest.length > 0) remainingReactions[emoji] = rest;
+        });
+        if (hadComments || hadReactions) {
+          const data: Record<string, unknown> = {};
+          if (hadComments) data.comments = remainingComments;
+          if (hadReactions) data.reactions = remainingReactions;
+          ops.push({ type: 'update', ref: doc(db, 'photos', photo.id), data });
+        }
       });
-      // Delete user profile
-      batch.delete(doc(db, 'users', user.uid));
-      
-      await batch.commit();
-      await signOut(auth);
+
+      // Firestore batches cap at 500 operations
+      for (let i = 0; i < ops.length; i += 400) {
+        const batch = writeBatch(db);
+        ops.slice(i, i + 400).forEach(op => {
+          if (op.type === 'delete') batch.delete(op.ref);
+          else batch.update(op.ref, op.data);
+        });
+        await batch.commit();
+      }
+
+      // Delete the profile last: photo updates above require the user doc to
+      // still exist for the security rules' registered-user check.
+      const profileBatch = writeBatch(db);
+      profileBatch.delete(doc(db, 'users', user.uid));
+      await profileBatch.commit();
+
+      try {
+        // Also remove the Firebase Auth account so the login itself is gone
+        await deleteUser(user);
+      } catch (authErr: any) {
+        if (authErr?.code === 'auth/requires-recent-login') {
+          showToast('Data deleted. Sign in again and repeat to remove your login.');
+          await signOut(auth);
+        } else {
+          throw authErr;
+        }
+      }
       setShowSettings(false);
     } catch (err) {
       console.error('Failed to delete account:', err);
+      showToast('Failed to delete account. Please try again.');
     }
   };
 
@@ -581,6 +638,7 @@ export default function App() {
       });
     } catch (err) {
       console.error('Failed to react:', err);
+      showToast('Failed to add reaction. Please try again.');
     }
   };
 
@@ -601,6 +659,7 @@ export default function App() {
       link.click();
     } catch (err) {
       console.error('Export failed', err);
+      showToast('Failed to export collage. Please try again.');
     } finally {
       setIsGeneratingCollage(false);
     }
@@ -628,9 +687,10 @@ export default function App() {
     
     try {
       await navigator.clipboard.writeText(url.toString());
-      alert('Link copied to clipboard!');
+      showToast('Link copied to clipboard', 'success');
     } catch (err) {
       console.error('Failed to copy link', err);
+      showToast('Failed to copy link.');
     }
   };
 
@@ -682,6 +742,7 @@ export default function App() {
       setCommentText('');
     } catch (err) {
       console.error('Failed to add comment:', err);
+      showToast('Failed to post comment. Please try again.');
     }
   };
 
@@ -696,6 +757,7 @@ export default function App() {
       });
     } catch (err) {
       console.error('Failed to delete comment:', err);
+      showToast('Failed to delete comment. Please try again.');
     }
   };
 
@@ -725,6 +787,7 @@ export default function App() {
       }
     } catch (err) {
       console.error('Failed to toggle reaction:', err);
+      showToast('Failed to update reaction. Please try again.');
     }
   };
 
@@ -1259,6 +1322,22 @@ export default function App() {
           </div>
         </div>
       )}
+      {/* Toasts */}
+      {toasts.length > 0 && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[300] flex flex-col items-center gap-2 print:hidden">
+          {toasts.map(t => (
+            <div
+              key={t.id}
+              className={`px-5 py-3 shadow-2xl font-sans text-[10px] uppercase tracking-[0.2em] text-center animate-in fade-in slide-in-from-top-2 duration-300 ${
+                t.type === 'error' ? 'bg-red-700 text-white' : 'bg-[#1A1A1A] text-[#F9F8F5]'
+              }`}
+            >
+              {t.message}
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Settings Modal */}
       {showSettings && user && (
         <div className="fixed inset-0 z-[200] bg-black/40 flex items-center justify-center p-4">

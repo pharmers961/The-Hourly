@@ -49,6 +49,8 @@ service cloud.firestore {
                        isValidUser(incoming()) &&
                        incoming().id == existing().id &&
                        incoming().email == existing().email;
+
+      allow delete: if isSignedIn() && userId == request.auth.uid;
     }
     
     function isValidPhoto(data) {
