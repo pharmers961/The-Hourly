@@ -1,7 +1,0 @@
---- firestore.rules
-+++ firestore.rules
-@@ -53,3 +53,3 @@
-              data.timestamp is string && data.timestamp.size() <= 50 &&
--             data.imageUrl is string && data.imageUrl.size() <= 2000000;
-+             data.imageUrl is string;
-     }
