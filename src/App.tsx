@@ -66,6 +66,26 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Heartbeat: lastActive is otherwise only written at login, so without this
+  // the 10-minute online check runs on stale data. Refresh it periodically
+  // while the app is open (and whenever the tab regains focus).
+  useEffect(() => {
+    if (!user) return;
+    const updateLastActive = () => {
+      setDoc(doc(db, 'users', user.uid), { lastActive: new Date().toISOString() }, { merge: true })
+        .catch((err) => console.warn('Failed to update lastActive:', err));
+    };
+    const interval = setInterval(updateLastActive, 5 * 60 * 1000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') updateLastActive();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [user]);
+
   useEffect(() => {
     if (!user) {
       setPhotos([]);
@@ -207,15 +227,11 @@ export default function App() {
     }
   }, [photos, selectedPhoto]);
 
-  const isSiblingOnline = (siblingId: string, siblingName: string) => {
-    // If it's the current user, they are online.
-    if (user && (user.uid === siblingId || user.displayName?.toLowerCase().includes(siblingName.toLowerCase()))) {
-      return true;
-    }
-    
-    // Find the user in our fetched users by id, or loosely by name (for mock data mapping)
-    const dbUser = users[siblingId] || Object.values(users).find(u => u.name?.toLowerCase().includes(siblingName.toLowerCase()));
-    
+  const isSiblingOnline = (siblingId: string) => {
+    // The current user is by definition online while using the app.
+    if (user && user.uid === siblingId) return true;
+
+    const dbUser = users[siblingId];
     if (dbUser && dbUser.lastActive) {
       const activeTime = new Date(dbUser.lastActive).getTime();
       const now = new Date().getTime();
@@ -317,8 +333,17 @@ export default function App() {
 
   const touchStartX = useRef<number | null>(null);
   const touchEndX = useRef<number | null>(null);
+  const lastTapTime = useRef<number>(0);
+  const isMultiTouch = useRef(false);
+  const [showHeartBurst, setShowHeartBurst] = useState(false);
 
   const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length > 1) {
+      // Two fingers = pinch zoom; don't treat it as a tap or swipe
+      isMultiTouch.current = true;
+      return;
+    }
+    isMultiTouch.current = false;
     touchStartX.current = e.touches[0].clientX;
   };
 
@@ -327,19 +352,43 @@ export default function App() {
   };
 
   const handleTouchEnd = () => {
-    if (!touchStartX.current || !touchEndX.current) return;
-    const distance = touchStartX.current - touchEndX.current;
-    
+    const start = touchStartX.current;
+    const end = touchEndX.current;
+    touchStartX.current = null;
+    touchEndX.current = null;
+
+    if (isMultiTouch.current) return;
+
+    const distance = start !== null && end !== null ? start - end : 0;
     if (distance > 50) {
       // Swiped left (go to next/newer)
       handlePrevPhoto();
-    } else if (distance < -50) {
+      return;
+    }
+    if (distance < -50) {
       // Swiped right (go to prev/older)
       handleNextPhoto();
+      return;
     }
-    
-    touchStartX.current = null;
-    touchEndX.current = null;
+
+    // No meaningful movement: this was a tap. Two taps in quick succession
+    // heart the photo.
+    const now = Date.now();
+    if (now - lastTapTime.current < 300) {
+      lastTapTime.current = 0;
+      handleDoubleTapHeart();
+    } else {
+      lastTapTime.current = now;
+    }
+  };
+
+  const handleDoubleTapHeart = () => {
+    if (!selectedPhoto || !user) return;
+    setShowHeartBurst(true);
+    setTimeout(() => setShowHeartBurst(false), 700);
+    // Add-only: double-tapping never removes an existing heart
+    const hasReacted = (selectedPhoto.reactions?.['❤️'] || []).includes(user.uid);
+    if (!hasReacted) handleToggleReaction('❤️');
   };
 
   const missedSiblings = useMemo(() => {
@@ -799,7 +848,7 @@ export default function App() {
                       {nameParts.length > 1 && <br />}
                       {nameParts.slice(1).join(' ')}
                     </span>
-                    <div className={`absolute -right-2 top-0 w-1.5 h-1.5 md:w-2 md:h-2 rounded-full transition-colors duration-1000 print:hidden ${isSiblingOnline(sibling.id, sibling.name) ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-[#1A1A1A] opacity-20'}`} />
+                    <div className={`absolute -right-2 top-0 w-1.5 h-1.5 md:w-2 md:h-2 rounded-full transition-colors duration-1000 print:hidden ${isSiblingOnline(sibling.id) ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-[#1A1A1A] opacity-20'}`} />
                   </div>
                   <span className="font-sans text-[8px] md:text-[9px] uppercase opacity-40 tracking-tighter truncate block max-w-full px-1 print:text-black print:opacity-60 mt-1">
                     {getSiblingLocation(sibling)}
@@ -996,9 +1045,14 @@ export default function App() {
           </button>
           
           <div className="absolute top-6 right-6 md:top-10 md:right-10 flex items-center gap-4 md:gap-8 z-50">
-            {selectedPhoto.metadata?.lat && (
+            {(selectedPhoto.metadata?.lat || (selectedPhoto.metadata?.location && selectedPhoto.metadata.location !== 'Unknown Location')) && (
               <button
-                onClick={() => window.open(`https://www.google.com/maps/search/?api=1&query=${selectedPhoto.metadata!.lat},${selectedPhoto.metadata!.lng}`, '_blank')}
+                onClick={() => {
+                  const m = selectedPhoto.metadata!;
+                  // Prefer exact coordinates; fall back to searching the city name
+                  const mapQuery = m.lat && m.lng ? `${m.lat},${m.lng}` : encodeURIComponent(m.location!);
+                  window.open(`https://www.google.com/maps/search/?api=1&query=${mapQuery}`, '_blank');
+                }}
                 className="flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-100 transition-opacity cursor-pointer opacity-60"
               >
                 <MapPin size={16} />
@@ -1057,14 +1111,20 @@ export default function App() {
               <div className={`relative inline-block md:mx-20 ${isFullscreenPhoto ? 'w-full h-full flex items-center justify-center' : 'mx-8 max-w-full'}`}>
                 <TransformWrapper doubleClick={{ disabled: true }} pinch={{ step: 5 }}>
                   <TransformComponent wrapperStyle={isFullscreenPhoto ? { width: '100%', height: '100%' } : {}}>
-                    <img 
-                      src={selectedPhoto.imageUrl} 
-                      alt="Full screen view" 
-                      onDoubleClick={(e) => { e.stopPropagation(); handleToggleReaction('❤️'); }}
-                      className={`${isFullscreenPhoto ? 'h-screen w-auto max-w-full object-contain border-none p-0' : 'max-h-[50vh] md:max-h-[60vh] w-auto object-contain border-[0.5px] border-[#1A1A1A] p-3 shadow-xl'} bg-white cursor-zoom-in transition-all`} 
+                    <img
+                      src={selectedPhoto.imageUrl}
+                      alt="Full screen view"
+                      onDoubleClick={(e) => { e.stopPropagation(); handleDoubleTapHeart(); }}
+                      className={`${isFullscreenPhoto ? 'h-screen w-auto max-w-full object-contain border-none p-0' : 'max-h-[50vh] md:max-h-[60vh] w-auto object-contain border-[0.5px] border-[#1A1A1A] p-3 shadow-xl'} bg-white cursor-zoom-in transition-all`}
                     />
                   </TransformComponent>
                 </TransformWrapper>
+
+                {showHeartBurst && (
+                  <div className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none">
+                    <Heart size={96} className="text-red-500 fill-red-500 drop-shadow-lg animate-in zoom-in-50 fade-in duration-300" />
+                  </div>
+                )}
 
                 <button
                   onClick={() => setIsFullscreenPhoto(!isFullscreenPhoto)}
