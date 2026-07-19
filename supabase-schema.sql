@@ -163,15 +163,14 @@ begin
 end;
 $$;
 
--- search_path includes `extensions` because Supabase installs pgcrypto
--- there by default, not in `public`, so an unqualified gen_random_bytes()
--- call fails with "function ... does not exist" without it.
+-- Uses gen_random_uuid(), built into Postgres core since v13 — unlike
+-- gen_random_bytes() (pgcrypto), it needs no extension at all, sidestepping
+-- whatever schema pgcrypto is or isn't installed in on this project.
 create or replace function public.generate_invite_code()
 returns text
 language sql volatile
-set search_path = public, extensions
 as $$
-  select translate(encode(gen_random_bytes(9), 'base64'), '+/=', 'xyz')
+  select substr(replace(gen_random_uuid()::text, '-', ''), 1, 12)
 $$;
 
 create or replace function public.is_group_member(p_group_id uuid)
