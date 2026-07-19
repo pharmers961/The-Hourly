@@ -37,6 +37,7 @@ export default function App() {
   };
 
   const initialPhotoLoaded = useRef(false);
+  const photoEntryPushed = useRef(false);
   const lastNotifiedHour = useRef<number | null>(null);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
     'Notification' in window ? Notification.permission : 'default'
@@ -214,16 +215,50 @@ export default function App() {
   }, [user, notificationPermission]);
 
   useEffect(() => {
-    if (initialPhotoLoaded.current) {
-      const url = new URL(window.location.href);
-      if (selectedPhoto) {
-        url.searchParams.set('photo', selectedPhoto.id);
+    if (!initialPhotoLoaded.current) return;
+    const url = new URL(window.location.href);
+    const currentParam = url.searchParams.get('photo');
+
+    if (selectedPhoto) {
+      if (currentParam === selectedPhoto.id) return;
+      url.searchParams.set('photo', selectedPhoto.id);
+      if (currentParam) {
+        // Switching between photos: don't stack an entry per photo
+        window.history.replaceState({}, '', url.toString());
+      } else {
+        // Opening: push an entry so the system back gesture closes the
+        // photo instead of leaving the site
+        window.history.pushState({}, '', url.toString());
+        photoEntryPushed.current = true;
+      }
+    } else if (currentParam) {
+      if (photoEntryPushed.current) {
+        // Closed via the UI: consume the entry we pushed when opening
+        photoEntryPushed.current = false;
+        window.history.back();
       } else {
         url.searchParams.delete('photo');
+        window.history.replaceState({}, '', url.toString());
       }
-      window.history.replaceState({}, '', url.toString());
     }
   }, [selectedPhoto]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      const pId = new URLSearchParams(window.location.search).get('photo');
+      if (!pId) {
+        photoEntryPushed.current = false;
+        setSelectedPhoto(null);
+        setShowPhotoInfo(false);
+        setIsFullscreenPhoto(false);
+      } else {
+        const p = photos.find(x => x.id === pId);
+        if (p) setSelectedPhoto(p);
+      }
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [photos]);
 
   useEffect(() => {
     if (selectedPhoto) {
@@ -1102,7 +1137,7 @@ export default function App() {
         <div className="fixed inset-0 z-[100] bg-[#F9F8F5] flex flex-col items-center justify-center p-4 md:p-10 animate-in fade-in duration-300 print:hidden">
           <button 
             onClick={() => { setSelectedPhoto(null); setShowPhotoInfo(false); setIsFullscreenPhoto(false); }}
-            className="absolute top-6 left-6 md:top-10 md:left-10 flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-60 transition-opacity cursor-pointer"
+            className="absolute top-6 left-6 md:top-10 md:left-10 z-50 flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-60 transition-opacity cursor-pointer"
           >
             <span className="text-xl leading-none">&larr;</span> Back to Matrix
           </button>
