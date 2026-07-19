@@ -475,7 +475,7 @@ export default function App() {
     }
   };
 
-  const gridStyle = { gridTemplateColumns: `72px repeat(${activeUsers.length > 0 ? activeUsers.length : 1}, 1fr)` };
+  const gridStyle = { gridTemplateColumns: `64px repeat(${activeUsers.length > 0 ? activeUsers.length : 1}, 1fr)` };
 
   const STANDARD_TIMEZONES = [
     { label: 'New York (EST)', value: 'America/New_York' },
@@ -625,7 +625,7 @@ export default function App() {
                   {activeUsers.map(sibling => {
                     const photo = slot.photos[sibling.id];
                     return (
-                      <div key={sibling.id} className="w-full aspect-square">
+                      <div key={sibling.id} className="w-full max-w-[140px] md:max-w-[220px] aspect-square mx-auto">
                         {photo ? (
                           <div 
                             className={`h-full bg-white border-[0.5px] border-[#1A1A1A] border-opacity-20 p-1 flex flex-col hover:border-opacity-60 transition-all duration-1000 cursor-pointer print:border-black print:border-opacity-30 ${
@@ -637,7 +637,7 @@ export default function App() {
                               <img
                                 src={photo.imageUrl}
                                 alt={`${sibling.name}'s photo at ${slot.displayTime}`}
-                                className="absolute inset-0 w-full h-full object-cover grayscale opacity-80 group-hover:grayscale-0 group-hover:opacity-100 transition-all duration-700 print:grayscale-0 print:opacity-100"
+                                className="absolute inset-0 w-full h-full object-cover transition-all duration-700 print:opacity-100"
                               />
                               {photo.metadata && (
                                 <div className="absolute inset-x-0 bottom-0 p-2 md:p-3 bg-gradient-to-t from-black/60 via-black/30 to-transparent opacity-80 group-hover:opacity-100 transition-opacity duration-500 flex justify-between items-end print:opacity-100 print:bg-none print:bg-white/90">
