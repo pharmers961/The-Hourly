@@ -136,6 +136,16 @@ export async function sendMagicLink(email: string): Promise<void> {
   if (error) throw error;
 }
 
+export async function signInWithGoogle(): Promise<void> {
+  // On success this navigates the browser away to Google's consent screen;
+  // there is nothing to await after that beyond surfacing a setup error
+  const { error } = await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: { redirectTo: window.location.origin },
+  });
+  if (error) throw error;
+}
+
 export async function updateLastActive(profileId: string): Promise<void> {
   await supabase.from('profiles').update({ last_active: new Date().toISOString() }).eq('id', profileId);
 }

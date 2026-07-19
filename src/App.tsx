@@ -476,6 +476,16 @@ export default function App() {
     return () => clearInterval(timer);
   }, [notificationPermission]);
 
+  const handleGoogleLogin = async () => {
+    try {
+      await api.signInWithGoogle();
+    } catch (error) {
+      console.error('Google sign-in failed:', error);
+      const detail = error instanceof Error && error.message ? `: ${error.message.slice(0, 200)}` : '';
+      showToast(`Google sign-in failed${detail}`);
+    }
+  };
+
   const handleSendMagicLink = async (e: React.FormEvent) => {
     e.preventDefault();
     const email = loginEmail.trim().toLowerCase();
@@ -809,24 +819,40 @@ export default function App() {
               </button>
             </div>
           ) : (
-            <form onSubmit={handleSendMagicLink} noValidate className="flex flex-col items-center gap-5">
-              <input
-                type="email"
-                value={loginEmail}
-                onChange={(e) => setLoginEmail(e.target.value)}
-                placeholder="you@email.com"
-                autoComplete="email"
-                className="bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors text-center w-64 placeholder:opacity-30"
-              />
+            <div className="flex flex-col items-center gap-5">
               <button
-                type="submit"
-                disabled={isSendingLink}
-                className="mx-auto flex items-center gap-2 border-[0.5px] border-[#1A1A1A] px-6 py-3 hover:bg-[#1A1A1A] hover:text-[#F9F8F5] transition-colors font-sans text-[10px] uppercase tracking-widest cursor-pointer disabled:opacity-50"
+                onClick={handleGoogleLogin}
+                className="mx-auto flex items-center gap-2 bg-[#1A1A1A] text-[#F9F8F5] px-6 py-3 hover:bg-black transition-colors font-sans text-[10px] uppercase tracking-widest cursor-pointer w-64 justify-center"
               >
                 <LogIn size={14} />
-                {isSendingLink ? 'Sending...' : 'Email Me a Login Link'}
+                Continue with Google
               </button>
-            </form>
+
+              <div className="flex items-center gap-3 w-64 opacity-40">
+                <div className="h-px flex-1 bg-[#1A1A1A]" />
+                <span className="font-sans text-[9px] uppercase tracking-widest">or</span>
+                <div className="h-px flex-1 bg-[#1A1A1A]" />
+              </div>
+
+              <form onSubmit={handleSendMagicLink} noValidate className="flex flex-col items-center gap-5">
+                <input
+                  type="email"
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  placeholder="you@email.com"
+                  autoComplete="email"
+                  className="bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors text-center w-64 placeholder:opacity-30"
+                />
+                <button
+                  type="submit"
+                  disabled={isSendingLink}
+                  className="mx-auto flex items-center gap-2 border-[0.5px] border-[#1A1A1A] px-6 py-3 hover:bg-[#1A1A1A] hover:text-[#F9F8F5] transition-colors font-sans text-[10px] uppercase tracking-widest cursor-pointer disabled:opacity-50"
+                >
+                  <LogIn size={14} />
+                  {isSendingLink ? 'Sending...' : 'Email Me a Login Link'}
+                </button>
+              </form>
+            </div>
           )}
         </div>
       </div>
