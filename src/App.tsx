@@ -135,7 +135,7 @@ export default function App() {
             .then(p => setProfile(p))
             .catch(err => {
               console.error('Failed to load profile:', err);
-              showToast('Failed to load your profile. Please try again.');
+              showToast(`Failed to load your profile${errDetail(err)}`);
             })
             .finally(() => setIsAuthLoading(false));
         } else {
@@ -223,7 +223,7 @@ export default function App() {
       setSelectedGroupId(prev => (prev && myGroups.some(g => g.id === prev) ? prev : (myGroups[0]?.id || null)));
     } catch (err) {
       console.error('Failed to load groups:', err);
-      showToast('Failed to load your groups. Please try again.');
+      showToast(`Failed to load your groups${errDetail(err)}`);
     } finally {
       setGroupsLoaded(true);
     }
@@ -673,7 +673,7 @@ export default function App() {
       showToast('Nudge sent', 'success');
     } catch (err) {
       console.error('Failed to send nudges:', err);
-      showToast('Failed to send nudge. Please try again.');
+      showToast(`Failed to send nudge${errDetail(err)}`);
     }
 
     setTimeout(() => setIsNudging(false), 2000);
@@ -710,7 +710,7 @@ export default function App() {
       showToast('Moment captured', 'success');
     } catch (err) {
       console.error('Capture error:', err);
-      showToast('Photo failed to upload. Please try again.');
+      showToast(`Photo failed to upload${errDetail(err)}`);
     } finally {
       setIsCapturing(false);
       setPendingCaptureFile(null);
@@ -757,7 +757,7 @@ export default function App() {
       await api.saveProfileSettings(user.uid, newSettings);
     } catch (err) {
       console.error('Failed to save settings:', err);
-      showToast('Failed to save settings. Please try again.');
+      showToast(`Failed to save settings${errDetail(err)}`);
     }
   };
 
@@ -772,7 +772,7 @@ export default function App() {
       setShowSettings(false);
     } catch (err) {
       console.error('Failed to delete account:', err);
-      showToast('Failed to delete account. Please try again.');
+      showToast(`Failed to delete account${errDetail(err)}`);
     }
   };
 
@@ -818,7 +818,7 @@ export default function App() {
       setUsers(prev => ({ ...prev, [profile.id]: { ...prev[profile.id], name } }));
     } catch (err) {
       console.error('Failed to save name:', err);
-      showToast('Failed to save your name. Please try again.');
+      showToast(`Failed to save your name${errDetail(err)}`);
     }
   };
 
@@ -967,7 +967,7 @@ export default function App() {
       await refreshData();
     } catch (err) {
       console.error('Failed to react:', err);
-      showToast('Failed to add reaction. Please try again.');
+      showToast(`Failed to add reaction${errDetail(err)}`);
     }
   };
 
@@ -988,7 +988,7 @@ export default function App() {
       link.click();
     } catch (err) {
       console.error('Export failed', err);
-      showToast('Failed to export collage. Please try again.');
+      showToast(`Failed to export collage${errDetail(err)}`);
     } finally {
       setIsGeneratingCollage(false);
     }
@@ -1056,7 +1056,7 @@ export default function App() {
       await refreshData();
     } catch (err) {
       console.error('Failed to add comment:', err);
-      showToast('Failed to post comment. Please try again.');
+      showToast(`Failed to post comment${errDetail(err)}`);
     }
   };
 
@@ -1067,7 +1067,7 @@ export default function App() {
       await refreshData();
     } catch (err) {
       console.error('Failed to delete comment:', err);
-      showToast('Failed to delete comment. Please try again.');
+      showToast(`Failed to delete comment${errDetail(err)}`);
     }
   };
 
@@ -1079,7 +1079,7 @@ export default function App() {
       await refreshData();
     } catch (err) {
       console.error('Failed to toggle reaction:', err);
-      showToast('Failed to update reaction. Please try again.');
+      showToast(`Failed to update reaction${errDetail(err)}`);
     }
   };
 
