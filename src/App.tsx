@@ -1,11 +1,10 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X } from 'lucide-react';
-import { SIBLINGS } from './data';
 import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImage } from './utils';
 import { db, auth } from './firebase';
 import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
 import { collection, query, onSnapshot, setDoc, doc, doc as firestoreDoc, getDoc, serverTimestamp } from 'firebase/firestore';
-import { Photo } from './types';
+import { Photo, User as AppUser } from './types';
 
 export default function App() {
   const [photos, setPhotos] = useState<Photo[]>([]);
@@ -30,13 +29,13 @@ export default function App() {
         const userDoc = await getDoc(userRef);
         
         // Find matching sibling to get their timezone, or default to generic
-        const matchedSibling = SIBLINGS.find(s => s.name.toLowerCase() === currentUser.displayName?.split(' ')[0].toLowerCase());
+        const matchedUser = Object.values(usersData).find((s: any) => s.name?.toLowerCase() === currentUser.displayName?.split(' ')[0].toLowerCase());
         
         await setDoc(userRef, {
           id: currentUser.uid,
           name: currentUser.displayName || 'Unknown',
           email: currentUser.email,
-          timezone: matchedSibling?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+          timezone: (matchedUser as any)?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
           lastActive: new Date().toISOString()
         }, { merge: true });
       }
@@ -121,7 +120,16 @@ export default function App() {
 
   const [currentTime, setCurrentTime] = useState(new Date());
 
-  const timeSlots = useMemo(() => groupPhotosByHour(photos, SIBLINGS, referenceTimezone, currentTime), [photos, referenceTimezone, currentTime]);
+  const activeUsers: AppUser[] = useMemo(() => {
+    return Object.values(users).map(u => ({
+      id: (u as any).id || u.uid || '',
+      name: (u as any).name || 'Unknown',
+      timezone: (u as any).timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+      lastActive: u.lastActive
+    }));
+  }, [users]);
+
+  const timeSlots = useMemo(() => groupPhotosByHour(photos, activeUsers, referenceTimezone, currentTime), [photos, activeUsers, referenceTimezone, currentTime]);
 
   const missedSiblings = useMemo(() => {
     // Only check if we are 30 minutes or more into the current hour window
@@ -137,11 +145,11 @@ export default function App() {
 
     const currentSlot = timeSlots.find(s => s.hourKey === currentHourKey);
     
-    return SIBLINGS.filter(sibling => {
+    return activeUsers.filter(sibling => {
       if (!currentSlot) return true; // No one has uploaded anything this hour yet
       return !currentSlot.photos[sibling.id];
     });
-  }, [currentTime, timeSlots, dismissedNudgeHour]);
+  }, [currentTime, timeSlots, dismissedNudgeHour, activeUsers]);
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 60000);
@@ -205,7 +213,24 @@ export default function App() {
     }
   };
 
-  const gridStyle = { gridTemplateColumns: `100px repeat(${SIBLINGS.length}, 1fr)` };
+  const gridStyle = { gridTemplateColumns: `100px repeat(${activeUsers.length > 0 ? activeUsers.length : 1}, 1fr)` };
+
+  if (!isAuthLoading && !user) {
+    return (
+      <div className="h-screen bg-[#F9F8F5] text-[#1A1A1A] font-serif flex flex-col items-center justify-center p-4 selection:bg-[#1A1A1A] selection:text-[#F9F8F5]">
+        <div className="max-w-md text-center space-y-8">
+          <div>
+            <h1 className="text-4xl md:text-6xl tracking-tight leading-none mb-4 italic">The Hourly</h1>
+            <p className="font-sans text-xs md:text-sm uppercase tracking-[0.2em] opacity-60">A Synchronized Visual Journal</p>
+          </div>
+          <button onClick={handleLogin} className="mx-auto flex items-center gap-2 border-[0.5px] border-[#1A1A1A] px-6 py-3 hover:bg-[#1A1A1A] hover:text-[#F9F8F5] transition-colors font-sans text-[10px] uppercase tracking-widest cursor-pointer">
+            <LogIn size={14} />
+            Sign In to Chronicle
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen bg-[#F9F8F5] text-[#1A1A1A] font-serif flex flex-col selection:bg-[#1A1A1A] selection:text-[#F9F8F5] overflow-hidden print:overflow-visible print:bg-white print:h-auto">
@@ -227,7 +252,7 @@ export default function App() {
                     className="bg-transparent border-b border-[#1A1A1A] outline-none cursor-pointer"
                   >
                     <option value="">Local Time</option>
-                    {SIBLINGS.map(s => (
+                    {activeUsers.map(s => (
                       <option key={s.id} value={s.timezone}>{s.name}'s Time</option>
                     ))}
                   </select>
@@ -273,7 +298,7 @@ export default function App() {
           <div className="sticky top-0 z-20 bg-[#F9F8F5] pt-6 grid gap-4 mb-4 border-b-[0.5px] border-[#1A1A1A] pb-2 print:relative print:bg-white print:border-black print:pt-4" style={gridStyle}>
             <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end hidden md:block print:bg-white print:text-black">Hour / Slot</div>
             <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end md:hidden print:hidden">Time</div>
-            {SIBLINGS.map(sibling => (
+            {activeUsers.map(sibling => (
               <div key={sibling.id} className="text-center">
                 <div className="flex items-center justify-center gap-2">
                   <span className="block text-sm md:text-lg font-normal print:text-black">{sibling.name}</span>
@@ -309,7 +334,7 @@ export default function App() {
                     </span>
                   </div>
                   
-                  {SIBLINGS.map(sibling => {
+                  {activeUsers.map(sibling => {
                     const photo = slot.photos[sibling.id];
                     return (
                       <div key={sibling.id} className="h-full">
@@ -428,7 +453,7 @@ export default function App() {
             />
             <div className="flex flex-col items-center gap-3 text-center">
               <div className="font-serif text-3xl italic">
-                {SIBLINGS.find(s => s.id === selectedPhoto.userId)?.name || 'Unknown'}
+                {activeUsers.find(s => s.id === selectedPhoto.userId)?.name || 'Unknown'}
               </div>
               <div className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-60">
                 {new Date(selectedPhoto.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}

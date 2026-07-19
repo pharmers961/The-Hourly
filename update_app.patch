@@ -1,0 +1,86 @@
+--- src/App.tsx
++++ src/App.tsx
+@@ -2,7 +2,6 @@
+ import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X } from 'lucide-react';
+-import { SIBLINGS } from './data';
+ import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImage } from './utils';
+ import { db, auth } from './firebase';
+ import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
+ import { collection, query, onSnapshot, setDoc, doc, doc as firestoreDoc, getDoc, serverTimestamp } from 'firebase/firestore';
+-import { Photo } from './types';
++import { Photo, User as AppUser } from './types';
+ 
+@@ -34,3 +33,3 @@
+         
+-        const matchedSibling = SIBLINGS.find(s => s.name.toLowerCase() === currentUser.displayName?.split(' ')[0].toLowerCase());
++        const matchedSibling = Object.values(usersData).find(s => s.name?.toLowerCase() === currentUser.displayName?.split(' ')[0].toLowerCase());
+         
+@@ -40,3 +39,3 @@
+           email: currentUser.email,
+-          timezone: matchedSibling?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
++          timezone: (matchedSibling as any)?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+           lastActive: new Date().toISOString()
+@@ -124,5 +123,12 @@
+ 
+-  const timeSlots = useMemo(() => groupPhotosByHour(photos, SIBLINGS, referenceTimezone, currentTime), [photos, referenceTimezone, currentTime]);
++  const activeUsers: AppUser[] = useMemo(() => {
++    return Object.values(users).map(u => ({
++      id: (u as any).id || u.uid || '',
++      name: (u as any).name || 'Unknown',
++      timezone: (u as any).timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
++      lastActive: u.lastActive
++    }));
++  }, [users]);
++
++  const timeSlots = useMemo(() => groupPhotosByHour(photos, activeUsers, referenceTimezone, currentTime), [photos, activeUsers, referenceTimezone, currentTime]);
+ 
+@@ -141,3 +147,3 @@
+     
+-    return SIBLINGS.filter(sibling => {
++    return activeUsers.filter(sibling => {
+       if (!currentSlot) return true; // No one has uploaded anything this hour yet
+@@ -145,3 +151,3 @@
+     });
+-  }, [currentTime, timeSlots, dismissedNudgeHour]);
++  }, [currentTime, timeSlots, dismissedNudgeHour, activeUsers]);
+ 
+@@ -211,2 +217,19 @@
+ 
++  if (!isAuthLoading && !user) {
++    return (
++      <div className="h-screen bg-[#F9F8F5] text-[#1A1A1A] font-serif flex flex-col items-center justify-center p-4">
++        <div className="max-w-md text-center space-y-8">
++          <div>
++            <h1 className="text-4xl md:text-6xl tracking-tight leading-none mb-4 italic">The Hourly</h1>
++            <p className="font-sans text-xs md:text-sm uppercase tracking-[0.2em] opacity-60">A Synchronized Visual Journal</p>
++          </div>
++          <button onClick={handleLogin} className="mx-auto flex items-center gap-2 border-[0.5px] border-[#1A1A1A] px-6 py-3 hover:bg-[#1A1A1A] hover:text-[#F9F8F5] transition-colors font-sans text-[10px] uppercase tracking-widest">
++            <LogIn size={14} />
++            Sign In to Chronicle
++          </button>
++        </div>
++      </div>
++    );
++  }
++
+   const gridStyle = { gridTemplateColumns: `100px repeat(${activeUsers.length}, 1fr)` };
+@@ -231,3 +254,3 @@
+                     <option value="">Local Time</option>
+-                    {SIBLINGS.map(s => (
++                    {activeUsers.map(s => (
+                       <option key={s.id} value={s.timezone}>{s.name}'s Time</option>
+@@ -277,3 +300,3 @@
+             <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end md:hidden print:hidden">Time</div>
+-            {SIBLINGS.map(sibling => (
++            {activeUsers.map(sibling => (
+               <div key={sibling.id} className="text-center">
+@@ -313,3 +336,3 @@
+                   
+-                  {SIBLINGS.map(sibling => {
++                  {activeUsers.map(sibling => {
+                     const photo = slot.photos[sibling.id];
+@@ -432,3 +455,3 @@
+               <div className="font-serif text-3xl italic">
+-                {SIBLINGS.find(s => s.id === selectedPhoto.userId)?.name || 'Unknown'}
++                {activeUsers.find(s => s.id === selectedPhoto.userId)?.name || 'Unknown'}
+               </div>
