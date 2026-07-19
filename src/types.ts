@@ -6,10 +6,10 @@ export interface User {
 }
 
 export interface PhotoMetadata {
-  temperature: number; // in Celsius
+  temperature?: number; // in Celsius
   humidity?: number;
   location?: string;
-  noiseLevel: number; // in dB
+  noiseLevel?: number; // in dB (legacy field — browsers can't measure this, no longer written)
 }
 
 export interface Comment {

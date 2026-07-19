@@ -17,53 +17,71 @@ export function getTimezoneAbbreviation(timezone: string, date: Date = new Date(
   }
 }
 
-// Helper function to simulate fetching environmental metadata at the moment of capture
+// Fetch real environmental metadata at the moment of capture.
+// Only fields we can actually measure are populated — nothing is fabricated.
 export async function fetchEnvironmentalMetadata(): Promise<PhotoMetadata> {
-  return new Promise((resolve) => {
-    const defaultData = {
-      temperature: Math.floor(Math.random() * (35 - 10) + 10),
-      noiseLevel: Math.floor(Math.random() * (90 - 30) + 30),
-      humidity: 50,
-      location: 'Unknown Location',
-    };
+  if (!('geolocation' in navigator)) return {};
 
-    if ('geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          try {
-            const { latitude, longitude } = position.coords;
-            
-            // Fetch weather from open-meteo
-            const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m`);
-            const weatherData = await weatherRes.json();
-            
-            // Fetch location name from openstreetmap nominatim
-            const geoRes = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`);
-            const geoData = await geoRes.json();
-            
-            const city = geoData.address.city || geoData.address.town || geoData.address.village || geoData.address.county || 'Unknown Location';
-            
-            resolve({
-              temperature: weatherData.current?.temperature_2m || defaultData.temperature,
-              humidity: weatherData.current?.relative_humidity_2m || defaultData.humidity,
-              location: city,
-              noiseLevel: defaultData.noiseLevel, // We can't get this easily from browser
-            });
-          } catch (e) {
-            console.error('Failed to fetch real data', e);
-            resolve(defaultData);
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const metadata: PhotoMetadata = {};
+        try {
+          const { latitude, longitude } = position.coords;
+
+          const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m`);
+          const weatherData = await weatherRes.json();
+          if (typeof weatherData.current?.temperature_2m === 'number') {
+            metadata.temperature = weatherData.current.temperature_2m;
           }
-        },
-        (error) => {
-          console.warn('Geolocation error:', error);
-          resolve(defaultData);
-        },
-        { timeout: 5000 }
-      );
-    } else {
-      resolve(defaultData);
-    }
+          if (typeof weatherData.current?.relative_humidity_2m === 'number') {
+            metadata.humidity = weatherData.current.relative_humidity_2m;
+          }
+
+          const geoRes = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`);
+          const geoData = await geoRes.json();
+          const city = geoData.address?.city || geoData.address?.town || geoData.address?.village || geoData.address?.county;
+          if (city) {
+            metadata.location = city;
+          }
+        } catch (e) {
+          console.warn('Failed to fetch environmental metadata', e);
+        }
+        resolve(metadata);
+      },
+      (error) => {
+        console.warn('Geolocation error:', error);
+        resolve({});
+      },
+      { timeout: 5000 }
+    );
   });
+}
+
+// Local hour (0-23) in a given IANA timezone
+export function getHourInTimezone(timezone: string, date: Date = new Date()): number {
+  try {
+    const hourStr = new Intl.DateTimeFormat('en-US', { timeZone: timezone, hour: 'numeric', hour12: false }).format(date);
+    return parseInt(hourStr, 10) % 24;
+  } catch {
+    return date.getHours();
+  }
+}
+
+// Night-time in the given zone — used to avoid nudging sleeping family members
+export function isQuietHours(timezone: string, date: Date = new Date()): boolean {
+  const hour = getHourInTimezone(timezone, date);
+  return hour >= 22 || hour < 7;
+}
+
+export function formatRelativeTime(isoString: string, now: Date = new Date()): string {
+  const then = new Date(isoString);
+  const minutes = Math.floor((now.getTime() - then.getTime()) / 60000);
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${then.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} · ${then.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}`;
 }
 
 export function compressImage(file: File): Promise<string> {

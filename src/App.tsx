@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, Info, MapPin, Droplets, Share, Settings } from 'lucide-react';
-import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImage, formatTimezoneCity, getTimezoneAbbreviation } from './utils';
+import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, Info, MapPin, Droplets, Share, Settings, Moon } from 'lucide-react';
+import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImage, formatTimezoneCity, getTimezoneAbbreviation, isQuietHours, formatRelativeTime } from './utils';
 import { db, auth } from './firebase';
 import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
 import { collection, query, onSnapshot, setDoc, doc, doc as firestoreDoc, getDoc, serverTimestamp, writeBatch, where, addDoc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
@@ -29,8 +29,17 @@ export default function App() {
   const [showPhotoInfo, setShowPhotoInfo] = useState(false);
   const [isNudging, setIsNudging] = useState(false);
   const [referenceTimezone, setReferenceTimezone] = useState<string>('');
-  const [showTimezoneSettings, setShowTimezoneSettings] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
   const [tzPromptDismissed, setTzPromptDismissed] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+  const toastTimer = useRef<number | null>(null);
+
+  const showToast = (message: string) => {
+    setToastMessage(message);
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToastMessage(null), 2500);
+  };
   const [newPhotoIds, setNewPhotoIds] = useState<Set<string>>(new Set());
   const [dismissedNudgeHour, setDismissedNudgeHour] = useState<string | null>(null);
   const [commentText, setCommentText] = useState('');
@@ -187,19 +196,29 @@ export default function App() {
     }
   }, [photos, selectedPhoto]);
 
-  const isSiblingOnline = (siblingId: string, siblingName: string) => {
-    // If it's the current user, they are online.
-    if (user && (user.uid === siblingId || user.displayName?.toLowerCase().includes(siblingName.toLowerCase()))) {
-      return true;
-    }
-    
-    // Find the user in our fetched users by id, or loosely by name (for mock data mapping)
-    const dbUser = users[siblingId] || Object.values(users).find(u => u.name?.toLowerCase().includes(siblingName.toLowerCase()));
-    
-    if (dbUser && dbUser.lastActive) {
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (confirmClearOpen) {
+        setConfirmClearOpen(false);
+      } else if (selectedPhoto) {
+        setSelectedPhoto(null);
+        setShowPhotoInfo(false);
+      } else if (showMenu) {
+        setShowMenu(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [confirmClearOpen, selectedPhoto, showMenu]);
+
+  const isSiblingOnline = (siblingId: string) => {
+    if (user && user.uid === siblingId) return true;
+
+    const dbUser = users[siblingId];
+    if (dbUser?.lastActive) {
       const activeTime = new Date(dbUser.lastActive).getTime();
-      const now = new Date().getTime();
-      return (now - activeTime) <= 60 * 60 * 1000; // Active within last hour
+      return (Date.now() - activeTime) <= 60 * 60 * 1000; // Active within last hour
     }
     return false;
   };
@@ -207,10 +226,10 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(new Date());
 
   const activeUsers: AppUser[] = useMemo(() => {
-    return Object.values(users).map(u => ({
-      id: (u as any).id || u.uid || '',
-      name: (u as any).name || 'Unknown',
-      timezone: (u as any).timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+    return Object.values(users).map((u: any) => ({
+      id: u.id || u.uid || '',
+      name: u.name || 'Unknown',
+      timezone: u.timezone || DEVICE_TIMEZONE,
       lastActive: u.lastActive
     }));
   }, [users]);
@@ -253,24 +272,23 @@ export default function App() {
   };
 
   const missedSiblings = useMemo(() => {
-    // Only check if we are 30 minutes or more into the current hour window
-    // (For demo purposes, we'll also trigger it if minutes are 0-29 just so you can test it easily, wait, the prompt says "30 minutes into their respective hour slot", so we should strictly use 30)
-    // To make it testable now if the user wants to see it, maybe we just strictly follow the 30m rule. 
-    // Wait, the prompt says "30 minutes into their respective hour slot".
-    // I will strictly check >= 30.
+    // Only flag people once we're 30+ minutes into the current hour window
     if (currentTime.getMinutes() < 30) return [];
-    
+
     const currentHourKey = new Date(currentTime.getFullYear(), currentTime.getMonth(), currentTime.getDate(), currentTime.getHours()).toISOString();
-    
+
     if (dismissedNudgeHour === currentHourKey) return [];
 
     const currentSlot = timeSlots.find(s => s.hourKey === currentHourKey);
-    
+
     return activeUsers.filter(sibling => {
-      if (!currentSlot) return true; // No one has uploaded anything this hour yet
+      if (user && sibling.id === user.uid) return false;
+      // Don't nudge family members during their local night
+      if (isQuietHours(sibling.timezone, currentTime)) return false;
+      if (!currentSlot) return true;
       return !currentSlot.photos[sibling.id];
     });
-  }, [currentTime, timeSlots, dismissedNudgeHour, activeUsers]);
+  }, [currentTime, timeSlots, dismissedNudgeHour, activeUsers, user]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -323,10 +341,11 @@ export default function App() {
       });
       
       await batch.commit();
+      showToast(`Nudged ${missedSiblings.map(s => s.name).join(', ')}`);
     } catch (err) {
       console.error('Failed to send nudges:', err);
     }
-    
+
     setTimeout(() => setIsNudging(false), 2000);
   };
 
@@ -350,14 +369,16 @@ export default function App() {
       const compressedImageUrl = await compressImage(file);
       const metadata = await fetchEnvironmentalMetadata();
       const photoId = `p${Date.now()}`;
-      const newPhoto = {
+      const newPhoto: Record<string, unknown> = {
         id: photoId,
         userId: user.uid,
         timestamp: new Date().toISOString(),
         imageUrl: compressedImageUrl,
-        metadata
       };
-      
+      if (Object.keys(metadata).length > 0) {
+        newPhoto.metadata = metadata;
+      }
+
       await setDoc(doc(db, 'photos', photoId), newPhoto);
     } catch (err) {
       console.error('Capture error:', err);
@@ -370,8 +391,6 @@ export default function App() {
   };
 
   const handleClearAllPhotos = async () => {
-    if (!window.confirm('Are you sure you want to delete all your photos? This cannot be undone.')) return;
-    
     try {
       const batch = writeBatch(db);
       // Only delete photos belonging to this user
@@ -379,6 +398,7 @@ export default function App() {
         batch.delete(doc(db, 'photos', photo.id));
       });
       await batch.commit();
+      showToast('Your photos were cleared');
     } catch (err) {
       console.error('Failed to clear photos:', err);
     }
@@ -406,7 +426,7 @@ export default function App() {
     
     try {
       await navigator.clipboard.writeText(url.toString());
-      alert('Link copied to clipboard!');
+      showToast('Link copied to clipboard');
     } catch (err) {
       console.error('Failed to copy link', err);
     }
@@ -465,7 +485,16 @@ export default function App() {
 
   const gridStyle = { gridTemplateColumns: `100px repeat(${activeUsers.length > 0 ? activeUsers.length : 1}, 1fr)` };
 
-  if (!isAuthLoading && !user) {
+  if (isAuthLoading) {
+    return (
+      <div className="h-screen bg-[#F9F8F5] text-[#1A1A1A] font-serif flex flex-col items-center justify-center p-4">
+        <h1 className="text-4xl tracking-tight italic animate-pulse">The Hourly</h1>
+        <p className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-40 mt-4">Opening the chronicle&hellip;</p>
+      </div>
+    );
+  }
+
+  if (!user) {
     return (
       <div className="h-screen bg-[#F9F8F5] text-[#1A1A1A] font-serif flex flex-col items-center justify-center p-4 selection:bg-[#1A1A1A] selection:text-[#F9F8F5]">
         <div className="max-w-md text-center space-y-8">
@@ -496,9 +525,10 @@ export default function App() {
               <>
                 <div className="flex items-center gap-1 opacity-60">
                   <Globe size={12} />
-                  <select 
+                  <select
                     value={referenceTimezone}
                     onChange={(e) => setReferenceTimezone(e.target.value)}
+                    aria-label="View journal in timezone"
                     className="bg-transparent border-b border-[#1A1A1A] outline-none cursor-pointer max-w-[120px]"
                   >
                     <option value="">Local Time</option>
@@ -514,71 +544,76 @@ export default function App() {
                     </optgroup>
                   </select>
                 </div>
+                {missedSiblings.length > 0 && (
+                  <button
+                    onClick={handleNudge}
+                    disabled={isNudging}
+                    aria-label={`Nudge ${missedSiblings.length} family member${missedSiblings.length > 1 ? 's' : ''}`}
+                    className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30"
+                  >
+                    <Bell size={12} className={isNudging ? 'animate-bounce' : ''} />
+                    <span>Nudge ({missedSiblings.length})</span>
+                  </button>
+                )}
                 <div className="relative">
                   <button
-                    onClick={() => setShowTimezoneSettings(s => !s)}
-                    className={`flex items-center gap-1 transition-opacity ${showTimezoneSettings ? 'opacity-100' : 'opacity-60 hover:opacity-100'}`}
+                    onClick={() => setShowMenu(s => !s)}
+                    aria-label="Menu"
+                    aria-expanded={showMenu}
+                    className={`flex items-center gap-1 transition-opacity ${showMenu ? 'opacity-100' : 'opacity-60 hover:opacity-100'}`}
                   >
                     <Settings size={12} />
-                    <span className="hidden md:inline">My Timezone</span>
+                    <span className="hidden md:inline">Menu</span>
                   </button>
-                  {showTimezoneSettings && (
+                  {showMenu && (
                     <>
-                      <div className="fixed inset-0 z-40" onClick={() => setShowTimezoneSettings(false)} />
-                      <div className="absolute left-0 md:left-auto md:right-0 top-full mt-3 z-50 bg-[#F9F8F5] border-[0.5px] border-[#1A1A1A] shadow-xl p-4 w-64 text-left">
-                        <div className="text-[9px] uppercase tracking-widest opacity-50 mb-2">Profile Timezone</div>
-                        <select
-                          value={myStoredTimezone || DEVICE_TIMEZONE}
-                          onChange={(e) => handleUpdateProfileTimezone(e.target.value)}
-                          className="w-full bg-transparent border-b border-[#1A1A1A] outline-none cursor-pointer py-1 text-[11px] uppercase tracking-widest"
-                        >
-                          {profileTimezoneOptions.map(o => (
-                            <option key={o.value} value={o.value}>{o.label} ({getTimezoneAbbreviation(o.value)})</option>
-                          ))}
-                        </select>
-                        <p className="mt-3 text-[9px] tracking-wide opacity-50 leading-relaxed normal-case">
-                          Shown under your name in the grid, and used when family members view the journal in your time.
-                        </p>
+                      <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
+                      <div className="absolute left-0 md:left-auto md:right-0 top-full mt-3 z-50 bg-[#F9F8F5] border-[0.5px] border-[#1A1A1A] shadow-xl w-64 text-left">
+                        <div className="p-4 border-b-[0.5px] border-[#1A1A1A] border-opacity-20">
+                          <div className="text-[9px] uppercase tracking-widest opacity-50 mb-2">Profile Timezone</div>
+                          <select
+                            value={myStoredTimezone || DEVICE_TIMEZONE}
+                            onChange={(e) => handleUpdateProfileTimezone(e.target.value)}
+                            aria-label="Profile timezone"
+                            className="w-full bg-transparent border-b border-[#1A1A1A] outline-none cursor-pointer py-1 text-[11px] uppercase tracking-widest"
+                          >
+                            {profileTimezoneOptions.map(o => (
+                              <option key={o.value} value={o.value}>{o.label} ({getTimezoneAbbreviation(o.value)})</option>
+                            ))}
+                          </select>
+                          <p className="mt-2 text-[9px] tracking-wide opacity-50 leading-relaxed normal-case">
+                            Shown under your name in the grid, and used when family members view the journal in your time.
+                          </p>
+                        </div>
+                        <div className="p-2 flex flex-col">
+                          <button onClick={() => { setShowMenu(false); window.print(); }} className="flex items-center gap-2 px-2 py-2 text-[10px] uppercase tracking-widest opacity-70 hover:opacity-100 hover:bg-[#1A1A1A]/5 transition-all text-left">
+                            <Download size={12} />
+                            Chronicle PDF
+                          </button>
+                          {notificationPermission === 'default' && (
+                            <button onClick={() => { setShowMenu(false); requestNotificationPermission(); }} className="flex items-center gap-2 px-2 py-2 text-[10px] uppercase tracking-widest text-[#C5A059] opacity-80 hover:opacity-100 hover:bg-[#1A1A1A]/5 transition-all text-left">
+                              <Bell size={12} />
+                              Enable Alerts
+                            </button>
+                          )}
+                          <button onClick={() => { setShowMenu(false); setConfirmClearOpen(true); }} className="flex items-center gap-2 px-2 py-2 text-[10px] uppercase tracking-widest opacity-70 hover:opacity-100 hover:text-red-600 hover:bg-red-600/5 transition-all text-left">
+                            <Trash2 size={12} />
+                            Clear My Photos
+                          </button>
+                          <button onClick={() => { setShowMenu(false); handleLogout(); }} className="flex items-center gap-2 px-2 py-2 text-[10px] uppercase tracking-widest opacity-70 hover:opacity-100 hover:bg-[#1A1A1A]/5 transition-all text-left">
+                            <LogOut size={12} />
+                            Logout
+                          </button>
+                        </div>
                       </div>
                     </>
                   )}
                 </div>
-                <button onClick={() => window.print()} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
-                  <Download size={12} />
-                  <span className="hidden md:inline">Chronicle PDF</span>
-                </button>
-                {notificationPermission === 'default' && (
-                  <button onClick={requestNotificationPermission} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity text-[#C5A059]">
-                    <Bell size={12} />
-                    <span className="hidden md:inline">Enable Alerts</span>
-                  </button>
-                )}
-                <button onClick={handleClearAllPhotos} className="flex items-center gap-1 opacity-60 hover:text-red-600 hover:opacity-100 transition-colors">
-                  <Trash2 size={12} />
-                  <span className="hidden md:inline">Clear My Photos</span>
-                </button>
-                <button onClick={handleNudge} disabled={isNudging} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30">
-                  <Bell size={12} className={isNudging ? 'animate-bounce' : ''} />
-                  <span>Nudge</span>
-                </button>
               </>
-            )}
-            {!isAuthLoading && (
-              user ? (
-                <button onClick={handleLogout} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
-                  <LogOut size={12} />
-                  <span className="hidden md:inline">Logout</span>
-                </button>
-              ) : (
-                <button onClick={handleLogin} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
-                  <LogIn size={12} />
-                  <span>Login</span>
-                </button>
-              )
             )}
           </div>
           <div className="text-2xl font-light print:text-black">
-            <span className="print:hidden">{currentTime.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', ...(referenceTimezone ? { timeZone: referenceTimezone } : {}) })} </span>
+            <span className="print:hidden">{currentTime.toLocaleTimeString('en-US', { hour12: true, hour: 'numeric', minute: '2-digit', ...(referenceTimezone ? { timeZone: referenceTimezone } : {}) })} </span>
             <span className="hidden print:inline">{new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })} Chronicle</span>
             <span className="text-xs uppercase align-top ml-1 font-sans opacity-40 print:hidden">
               {formatTimezoneCity(referenceTimezone || DEVICE_TIMEZONE)}
@@ -618,13 +653,19 @@ export default function App() {
         <div className="min-w-[600px] md:min-w-0 max-w-7xl mx-auto px-4 md:px-10 pb-24 w-full print:px-0 print:pb-0">
           {/* Column Headers (X-Axis: Names) */}
           <div className="sticky top-0 z-20 bg-[#F9F8F5] pt-6 grid gap-4 mb-4 border-b-[0.5px] border-[#1A1A1A] pb-2 print:relative print:bg-white print:border-black print:pt-4" style={gridStyle}>
-            <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end hidden md:block print:bg-white print:text-black">Hour / Slot</div>
-            <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end md:hidden print:hidden">Time</div>
+            <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end hidden md:block print:bg-white print:text-black">
+              Hour
+              <span className="block text-[8px] opacity-40 mt-0.5">{formatTimezoneCity(referenceTimezone || DEVICE_TIMEZONE)}</span>
+            </div>
+            <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end md:hidden print:hidden">
+              Time
+              <span className="block text-[8px] opacity-40 mt-0.5">{formatTimezoneCity(referenceTimezone || DEVICE_TIMEZONE)}</span>
+            </div>
             {activeUsers.map(sibling => (
               <div key={sibling.id} className="text-center">
                 <div className="flex items-center justify-center gap-2">
                   <span className="block text-sm md:text-lg font-normal print:text-black">{sibling.name}</span>
-                  <div className={`w-1.5 h-1.5 md:w-2 md:h-2 rounded-full transition-colors duration-1000 print:hidden ${isSiblingOnline(sibling.id, sibling.name) ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-[#1A1A1A] opacity-20'}`} />
+                  <div className={`w-1.5 h-1.5 md:w-2 md:h-2 rounded-full transition-colors duration-1000 print:hidden ${isSiblingOnline(sibling.id) ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-[#1A1A1A] opacity-20'}`} />
                 </div>
                 <span className="font-sans text-[8px] md:text-[9px] uppercase opacity-40 tracking-tighter truncate block px-1 print:text-black print:opacity-60">
                   {formatTimezoneCity(sibling.timezone)} ({getTimezoneAbbreviation(sibling.timezone)})
@@ -634,6 +675,11 @@ export default function App() {
           </div>
 
           {/* Content area */}
+          {photos.length === 0 && (
+            <div className="text-center py-10 font-sans text-[10px] uppercase tracking-[0.2em] opacity-40 print:hidden">
+              No moments captured yet &mdash; tap Capture below to begin today's chronicle
+            </div>
+          )}
           <div className="space-y-6 md:space-y-4 print:space-y-8">
             {timeSlots.map((slot, idx) => {
               // Assume first slot is current for demo purposes if it matches current hour, otherwise just style standard
@@ -673,27 +719,35 @@ export default function App() {
                                 alt={`${sibling.name}'s photo at ${slot.displayTime}`}
                                 className="absolute inset-0 w-full h-full object-cover grayscale opacity-80 group-hover:grayscale-0 group-hover:opacity-100 transition-all duration-700 print:grayscale-0 print:opacity-100"
                               />
-                              {photo.metadata && (
+                              {photo.metadata && (photo.metadata.temperature !== undefined || photo.metadata.location) && (
                                 <div className="absolute inset-x-0 bottom-0 p-2 md:p-3 bg-gradient-to-t from-black/60 via-black/30 to-transparent opacity-80 group-hover:opacity-100 transition-opacity duration-500 flex justify-between items-end print:opacity-100 print:bg-none print:bg-white/90">
-                                  <div className="flex items-center space-x-1 text-white print:text-black">
-                                    <Thermometer size={10} className="md:w-3 md:h-3 print:w-3 print:h-3" strokeWidth={2} />
-                                    <span className="font-sans text-[8px] md:text-[10px]">{photo.metadata.temperature}°C</span>
-                                  </div>
-                                  <div className="flex items-center space-x-1 text-white print:text-black">
-                                    <span className="font-sans text-[8px] md:text-[10px]">{photo.metadata.noiseLevel} dB</span>
-                                    <Activity size={10} className="md:w-3 md:h-3 print:w-3 print:h-3" strokeWidth={2} />
-                                  </div>
+                                  {photo.metadata.temperature !== undefined && (
+                                    <div className="flex items-center space-x-1 text-white print:text-black">
+                                      <Thermometer size={10} className="md:w-3 md:h-3 print:w-3 print:h-3" strokeWidth={2} />
+                                      <span className="font-sans text-[8px] md:text-[10px]">{Math.round(photo.metadata.temperature)}°C</span>
+                                    </div>
+                                  )}
+                                  {photo.metadata.location && (
+                                    <div className="flex items-center space-x-1 text-white print:text-black ml-auto min-w-0">
+                                      <span className="font-sans text-[8px] md:text-[10px] truncate">{photo.metadata.location}</span>
+                                      <MapPin size={10} className="md:w-3 md:h-3 print:w-3 print:h-3 shrink-0" strokeWidth={2} />
+                                    </div>
+                                  )}
                                 </div>
                               )}
                             </div>
                           </div>
-                        ) : (
-                          <div className={`h-full flex items-center justify-center transition-colors duration-500 print:bg-transparent print:border print:border-dashed print:border-black/20 ${isCurrent ? 'border-[0.5px] border-dashed border-[#C5A059]' : 'bg-[#1A1A1A]'} ${isCurrent && isNudging ? 'bg-[#C5A059] bg-opacity-20 animate-pulse print:animate-none print:bg-transparent' : ''}`}>
-                            <span className={`font-sans text-[8px] md:text-[9px] uppercase tracking-widest transition-colors duration-500 print:text-black/40 ${isCurrent ? 'text-[#C5A059]' : 'text-[#F9F8F5]'} ${isCurrent && isNudging ? 'opacity-100 font-bold' : 'opacity-60'}`}>
-                              {isCurrent && isNudging ? 'Nudged!' : (isCurrent ? 'Pending...' : 'Missed Moment')}
-                            </span>
-                          </div>
-                        )}
+                        ) : (() => {
+                          const isResting = isCurrent && isQuietHours(sibling.timezone, currentTime);
+                          return (
+                            <div className={`h-full flex items-center justify-center gap-1.5 transition-colors duration-500 print:bg-transparent print:border print:border-dashed print:border-black/20 ${isCurrent ? 'border-[0.5px] border-dashed border-[#C5A059]' : 'border-[0.5px] border-dashed border-[#1A1A1A] border-opacity-15 bg-[#1A1A1A]/[0.03]'} ${isCurrent && isNudging && !isResting ? 'bg-[#C5A059] bg-opacity-20 animate-pulse print:animate-none print:bg-transparent' : ''}`}>
+                              {isResting && <Moon size={10} className="text-[#C5A059] opacity-60 print:hidden" strokeWidth={1.5} />}
+                              <span className={`font-sans text-[8px] md:text-[9px] uppercase tracking-widest transition-colors duration-500 print:text-black/40 ${isCurrent ? 'text-[#C5A059]' : 'text-[#1A1A1A] opacity-30'} ${isCurrent && isNudging && !isResting ? 'opacity-100 font-bold' : isCurrent ? 'opacity-60' : ''}`}>
+                                {isCurrent ? (isResting ? 'Resting' : (isNudging ? 'Nudged!' : 'Pending...')) : 'Missed'}
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </div>
                     );
                   })}
@@ -730,7 +784,7 @@ export default function App() {
 
       {/* Missed Sync Toast */}
       {missedSiblings.length > 0 && (
-        <div className="fixed bottom-6 right-6 md:bottom-10 md:right-10 z-50 animate-in slide-in-from-bottom-8 fade-in duration-500 print:hidden">
+        <div className="fixed bottom-24 right-4 md:bottom-10 md:right-10 z-50 animate-in slide-in-from-bottom-8 fade-in duration-500 print:hidden">
           <div className="bg-[#1A1A1A] text-[#F9F8F5] shadow-2xl p-4 md:p-5 flex flex-col gap-3 max-w-[280px] md:max-w-sm relative">
             <button 
               onClick={handleDismissNudge}
@@ -759,16 +813,23 @@ export default function App() {
 
       {/* Full Screen Photo Modal */}
       {selectedPhoto && (
-        <div className="fixed inset-0 z-[100] bg-[#F9F8F5] flex flex-col items-center justify-center p-4 md:p-10 animate-in fade-in duration-300 print:hidden">
-          <button 
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Photo detail"
+          onClick={(e) => { if (e.target === e.currentTarget) { setSelectedPhoto(null); setShowPhotoInfo(false); } }}
+          className="fixed inset-0 z-[100] bg-[#F9F8F5] flex flex-col items-center justify-center p-4 md:p-10 animate-in fade-in duration-300 print:hidden"
+        >
+          <button
             onClick={() => { setSelectedPhoto(null); setShowPhotoInfo(false); }}
             className="absolute top-6 left-6 md:top-10 md:left-10 flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-60 transition-opacity cursor-pointer"
           >
             <span className="text-xl leading-none">&larr;</span> Back to Matrix
           </button>
-          
+
           <button
             onClick={handleSharePhoto}
+            aria-label="Share photo"
             className={`absolute top-6 right-24 md:top-10 md:right-32 flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-100 transition-opacity cursor-pointer opacity-60`}
           >
             <Share size={16} />
@@ -777,6 +838,8 @@ export default function App() {
 
           <button
             onClick={() => setShowPhotoInfo(!showPhotoInfo)}
+            aria-label="Toggle photo info"
+            aria-pressed={showPhotoInfo}
             className={`absolute top-6 right-6 md:top-10 md:right-10 flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-100 transition-opacity cursor-pointer ${showPhotoInfo ? 'opacity-100' : 'opacity-60'}`}
           >
             <Info size={16} />
@@ -795,9 +858,11 @@ export default function App() {
                   const count = (selectedPhoto.reactions?.[emoji] || []).length;
                   const hasReacted = (selectedPhoto.reactions?.[emoji] || []).includes(user?.uid || '');
                   return (
-                    <button 
+                    <button
                       key={emoji}
                       onClick={() => handleToggleReaction(emoji)}
+                      aria-label={`React with ${emoji}${count > 0 ? ` (${count})` : ''}`}
+                      aria-pressed={hasReacted}
                       className={`flex items-center gap-1 px-2 py-1 rounded-full transition-colors ${hasReacted ? 'bg-[#F9F8F5]' : 'hover:bg-gray-50'}`}
                     >
                       <span className="text-base leading-none">{emoji}</span>
@@ -812,9 +877,11 @@ export default function App() {
                 {activeUsers.find(s => s.id === selectedPhoto.userId)?.name || 'Unknown'}
               </div>
               <div className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-60">
+                {new Date(selectedPhoto.timestamp).toDateString() !== new Date().toDateString() &&
+                  `${new Date(selectedPhoto.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} · `}
                 {new Date(selectedPhoto.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
               </div>
-              {showPhotoInfo && selectedPhoto.metadata && (
+              {showPhotoInfo && selectedPhoto.metadata && Object.keys(selectedPhoto.metadata).length > 0 && (
                 <div className="flex flex-wrap items-center justify-center gap-4 md:gap-8 mt-6 font-sans text-[10px] uppercase tracking-widest border-t-[0.5px] border-[#1A1A1A] pt-6 w-full max-w-lg animate-in fade-in slide-in-from-top-2">
                   {selectedPhoto.metadata.location && (
                     <div className="flex items-center gap-2">
@@ -822,20 +889,24 @@ export default function App() {
                       <span>{selectedPhoto.metadata.location}</span>
                     </div>
                   )}
-                  <div className="flex items-center gap-2">
-                    <Thermometer size={14} strokeWidth={1.5} className="opacity-70" />
-                    <span>{selectedPhoto.metadata.temperature}°C</span>
-                  </div>
+                  {selectedPhoto.metadata.temperature !== undefined && (
+                    <div className="flex items-center gap-2">
+                      <Thermometer size={14} strokeWidth={1.5} className="opacity-70" />
+                      <span>{Math.round(selectedPhoto.metadata.temperature)}°C</span>
+                    </div>
+                  )}
                   {selectedPhoto.metadata.humidity !== undefined && (
                     <div className="flex items-center gap-2">
                       <Droplets size={14} strokeWidth={1.5} className="opacity-70" />
                       <span>{selectedPhoto.metadata.humidity}%</span>
                     </div>
                   )}
-                  <div className="flex items-center gap-2">
-                    <Activity size={14} strokeWidth={1.5} className="opacity-70" />
-                    <span>{selectedPhoto.metadata.noiseLevel} dB</span>
-                  </div>
+                  {selectedPhoto.metadata.noiseLevel !== undefined && (
+                    <div className="flex items-center gap-2">
+                      <Activity size={14} strokeWidth={1.5} className="opacity-70" />
+                      <span>{selectedPhoto.metadata.noiseLevel} dB</span>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -847,7 +918,7 @@ export default function App() {
                       <div className="flex items-center justify-between">
                         <span className="font-serif font-bold italic text-sm">{comment.userName}</span>
                         <span className="font-sans text-[8px] uppercase tracking-widest opacity-40">
-                          {new Date(comment.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                          {formatRelativeTime(comment.timestamp, currentTime)}
                         </span>
                       </div>
                       <p className="font-sans text-xs">{comment.text}</p>
@@ -856,11 +927,12 @@ export default function App() {
                 </div>
                 
                 <form onSubmit={handleAddComment} className="flex gap-2 w-full">
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     value={commentText}
                     onChange={(e) => setCommentText(e.target.value)}
                     placeholder="Add a comment..."
+                    aria-label="Add a comment"
                     className="flex-1 bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-xs outline-none focus:border-opacity-50 transition-colors"
                   />
                   <button type="submit" disabled={!commentText.trim()} className="font-sans text-[10px] uppercase tracking-[0.2em] px-4 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30">
@@ -870,6 +942,39 @@ export default function App() {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Confirm Clear Photos Dialog */}
+      {confirmClearOpen && (
+        <div
+          className="fixed inset-0 z-[120] bg-[#1A1A1A]/40 flex items-center justify-center p-6 print:hidden animate-in fade-in duration-200"
+          onClick={(e) => { if (e.target === e.currentTarget) setConfirmClearOpen(false); }}
+        >
+          <div role="alertdialog" aria-modal="true" aria-label="Clear your photos" className="bg-[#F9F8F5] border-[0.5px] border-[#1A1A1A] shadow-2xl p-6 max-w-sm w-full">
+            <h2 className="font-serif italic text-xl mb-2">Clear your photos?</h2>
+            <p className="font-sans text-xs opacity-70 mb-6 leading-relaxed">
+              This permanently deletes every photo you've captured. It cannot be undone.
+            </p>
+            <div className="flex justify-end items-center gap-4 font-sans text-[10px] uppercase tracking-[0.2em]">
+              <button onClick={() => setConfirmClearOpen(false)} className="opacity-60 hover:opacity-100 transition-opacity">
+                Cancel
+              </button>
+              <button
+                onClick={() => { setConfirmClearOpen(false); handleClearAllPhotos(); }}
+                className="border-[0.5px] border-red-600 text-red-600 px-3 py-1.5 hover:bg-red-600 hover:text-white transition-colors"
+              >
+                Delete All
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Transient Toast */}
+      {toastMessage && (
+        <div role="status" className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[130] bg-[#1A1A1A] text-[#F9F8F5] px-4 py-2.5 font-sans text-[10px] uppercase tracking-[0.2em] shadow-xl print:hidden animate-in fade-in slide-in-from-bottom-2 duration-300">
+          {toastMessage}
         </div>
       )}
     </div>
