@@ -2,15 +2,50 @@ import { Photo, TimeSlot, User, PhotoMetadata } from './types';
 
 // Helper function to simulate fetching environmental metadata at the moment of capture
 export async function fetchEnvironmentalMetadata(): Promise<PhotoMetadata> {
-  // In a real app, this might access device sensors, geolocation weather APIs, or microphone data.
-  // We simulate a slight network delay and return reasonable randomized values.
   return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve({
-        temperature: Math.floor(Math.random() * (35 - 10) + 10), // Random temp between 10C and 35C
-        noiseLevel: Math.floor(Math.random() * (90 - 30) + 30), // Random noise level between 30dB (quiet room) and 90dB (city street)
-      });
-    }, 400);
+    const defaultData = {
+      temperature: Math.floor(Math.random() * (35 - 10) + 10),
+      noiseLevel: Math.floor(Math.random() * (90 - 30) + 30),
+      humidity: 50,
+      location: 'Unknown Location',
+    };
+
+    if ('geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        async (position) => {
+          try {
+            const { latitude, longitude } = position.coords;
+            
+            // Fetch weather from open-meteo
+            const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m`);
+            const weatherData = await weatherRes.json();
+            
+            // Fetch location name from openstreetmap nominatim
+            const geoRes = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`);
+            const geoData = await geoRes.json();
+            
+            const city = geoData.address.city || geoData.address.town || geoData.address.village || geoData.address.county || 'Unknown Location';
+            
+            resolve({
+              temperature: weatherData.current?.temperature_2m || defaultData.temperature,
+              humidity: weatherData.current?.relative_humidity_2m || defaultData.humidity,
+              location: city,
+              noiseLevel: defaultData.noiseLevel, // We can't get this easily from browser
+            });
+          } catch (e) {
+            console.error('Failed to fetch real data', e);
+            resolve(defaultData);
+          }
+        },
+        (error) => {
+          console.warn('Geolocation error:', error);
+          resolve(defaultData);
+        },
+        { timeout: 5000 }
+      );
+    } else {
+      resolve(defaultData);
+    }
   });
 }
 

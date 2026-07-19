@@ -1,9 +1,9 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X } from 'lucide-react';
+import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, Info, MapPin, Droplets, Share } from 'lucide-react';
 import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImage } from './utils';
 import { db, auth } from './firebase';
 import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
-import { collection, query, onSnapshot, setDoc, doc, doc as firestoreDoc, getDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, query, onSnapshot, setDoc, doc, doc as firestoreDoc, getDoc, serverTimestamp, writeBatch, where, addDoc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { Photo, User as AppUser } from './types';
 
 export default function App() {
@@ -13,10 +13,24 @@ export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
+  const [showPhotoInfo, setShowPhotoInfo] = useState(false);
   const [isNudging, setIsNudging] = useState(false);
   const [referenceTimezone, setReferenceTimezone] = useState<string>('');
   const [newPhotoIds, setNewPhotoIds] = useState<Set<string>>(new Set());
   const [dismissedNudgeHour, setDismissedNudgeHour] = useState<string | null>(null);
+  const [commentText, setCommentText] = useState('');
+  const initialPhotoLoaded = useRef(false);
+  const lastNotifiedHour = useRef<number | null>(null);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
+    'Notification' in window ? Notification.permission : 'default'
+  );
+
+  const requestNotificationPermission = async () => {
+    if ('Notification' in window) {
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+    }
+  };
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
@@ -28,14 +42,16 @@ export default function App() {
         const userRef = doc(db, 'users', currentUser.uid);
         const userDoc = await getDoc(userRef);
         
-        // Find matching sibling to get their timezone, or default to generic
-        const matchedUser = Object.values(usersData).find((s: any) => s.name?.toLowerCase() === currentUser.displayName?.split(' ')[0].toLowerCase());
-        
+        let tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        if (userDoc.exists()) {
+          tz = userDoc.data().timezone || tz;
+        }
+
         await setDoc(userRef, {
           id: currentUser.uid,
           name: currentUser.displayName || 'Unknown',
           email: currentUser.email,
-          timezone: (matchedUser as any)?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+          timezone: tz,
           lastActive: new Date().toISOString()
         }, { merge: true });
       }
@@ -68,6 +84,18 @@ export default function App() {
       
       setPhotos(photosData);
       
+      if (!initialPhotoLoaded.current) {
+        const params = new URLSearchParams(window.location.search);
+        const pId = params.get('photo');
+        if (pId) {
+          const p = photosData.find(x => x.id === pId);
+          if (p) {
+            setSelectedPhoto(p);
+          }
+        }
+        initialPhotoLoaded.current = true;
+      }
+      
       if (incomingNewIds.size > 0) {
         setNewPhotoIds(prev => {
           const next = new Set(prev);
@@ -95,11 +123,54 @@ export default function App() {
       setUsers(usersData);
     });
 
+    let isFirstNudgesLoad = true;
+    const nudgesQuery = query(collection(db, 'nudges'), where('toUserId', '==', user.uid));
+    const unsubscribeNudges = onSnapshot(nudgesQuery, (snapshot) => {
+      if (isFirstNudgesLoad) {
+        isFirstNudgesLoad = false;
+        return;
+      }
+      
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added') {
+          const nudge = change.doc.data();
+          if (notificationPermission === 'granted') {
+            new Notification('The Hourly: Nudge!', {
+              body: `${nudge.fromUserName} nudged you to capture your moment!`,
+              icon: '/favicon.svg'
+            });
+          }
+        }
+      });
+    });
+
     return () => {
       unsubscribePhotos();
       unsubscribeUsers();
+      unsubscribeNudges();
     };
-  }, [user]);
+  }, [user, notificationPermission]);
+
+  useEffect(() => {
+    if (initialPhotoLoaded.current) {
+      const url = new URL(window.location.href);
+      if (selectedPhoto) {
+        url.searchParams.set('photo', selectedPhoto.id);
+      } else {
+        url.searchParams.delete('photo');
+      }
+      window.history.replaceState({}, '', url.toString());
+    }
+  }, [selectedPhoto]);
+
+  useEffect(() => {
+    if (selectedPhoto) {
+      const updated = photos.find(p => p.id === selectedPhoto.id);
+      if (updated && updated !== selectedPhoto) {
+        setSelectedPhoto(updated);
+      }
+    }
+  }, [photos, selectedPhoto]);
 
   const isSiblingOnline = (siblingId: string, siblingName: string) => {
     // If it's the current user, they are online.
@@ -152,9 +223,24 @@ export default function App() {
   }, [currentTime, timeSlots, dismissedNudgeHour, activeUsers]);
 
   useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 60000);
+    const timer = setInterval(() => {
+      const now = new Date();
+      setCurrentTime(now);
+
+      if (notificationPermission === 'granted') {
+        const currentHour = now.getHours();
+        // Notify at top of the hour (minute 0)
+        if (now.getMinutes() === 0 && lastNotifiedHour.current !== currentHour) {
+          new Notification('The Hourly', {
+            body: 'A new hour has begun. Time to chronicle your moment.',
+            icon: '/favicon.svg'
+          });
+          lastNotifiedHour.current = currentHour;
+        }
+      }
+    }, 60000);
     return () => clearInterval(timer);
-  }, []);
+  }, [notificationPermission]);
 
   const handleLogin = async () => {
     try {
@@ -167,11 +253,31 @@ export default function App() {
 
   const handleLogout = () => signOut(auth);
 
-  const handleNudge = () => {
+  const handleNudge = async () => {
+    if (!user || missedSiblings.length === 0) return;
     setIsNudging(true);
-    setTimeout(() => {
-      setIsNudging(false);
-    }, 2000);
+    
+    try {
+      const batch = writeBatch(db);
+      const currentHourKey = new Date(currentTime.getFullYear(), currentTime.getMonth(), currentTime.getDate(), currentTime.getHours()).toISOString();
+      
+      missedSiblings.forEach(sibling => {
+        const nudgeRef = doc(collection(db, 'nudges'));
+        batch.set(nudgeRef, {
+          fromUserId: user.uid,
+          fromUserName: user.displayName?.split(' ')[0] || 'Someone',
+          toUserId: sibling.id,
+          hourKey: currentHourKey,
+          timestamp: serverTimestamp()
+        });
+      });
+      
+      await batch.commit();
+    } catch (err) {
+      console.error('Failed to send nudges:', err);
+    }
+    
+    setTimeout(() => setIsNudging(false), 2000);
   };
 
   const handleDismissNudge = () => {
@@ -213,7 +319,110 @@ export default function App() {
     }
   };
 
+  const handleClearAllPhotos = async () => {
+    if (!window.confirm('Are you sure you want to delete all your photos? This cannot be undone.')) return;
+    
+    try {
+      const batch = writeBatch(db);
+      // Only delete photos belonging to this user
+      photos.filter(p => p.userId === user?.uid).forEach(photo => {
+        batch.delete(doc(db, 'photos', photo.id));
+      });
+      await batch.commit();
+    } catch (err) {
+      console.error('Failed to clear photos:', err);
+    }
+  };
+
+  const handleSharePhoto = async () => {
+    if (!selectedPhoto) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set('photo', selectedPhoto.id);
+    
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'The Hourly',
+          text: 'Check out this moment on The Hourly',
+          url: url.toString(),
+        });
+        return;
+      } catch (err) {
+        if ((err as Error).name !== 'AbortError') {
+          console.error('Error sharing:', err);
+        }
+      }
+    }
+    
+    try {
+      await navigator.clipboard.writeText(url.toString());
+      alert('Link copied to clipboard!');
+    } catch (err) {
+      console.error('Failed to copy link', err);
+    }
+  };
+
+  const handleAddComment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedPhoto || !user || !commentText.trim()) return;
+
+    try {
+      const newComment = {
+        id: Date.now().toString(),
+        userId: user.uid,
+        userName: user.displayName?.split(' ')[0] || 'Unknown',
+        text: commentText.trim(),
+        timestamp: new Date().toISOString()
+      };
+
+      await updateDoc(doc(db, 'photos', selectedPhoto.id), {
+        comments: arrayUnion(newComment)
+      });
+      setCommentText('');
+    } catch (err) {
+      console.error('Failed to add comment:', err);
+    }
+  };
+
+  const handleToggleReaction = async (emoji: string) => {
+    if (!selectedPhoto || !user) return;
+    try {
+      const currentReactions = selectedPhoto.reactions || {};
+      const emojiUsers = currentReactions[emoji] || [];
+      const hasReacted = emojiUsers.includes(user.uid);
+      
+      if (hasReacted) {
+        const newEmojiUsers = emojiUsers.filter(id => id !== user.uid);
+        const newReactions = { ...currentReactions };
+        if (newEmojiUsers.length === 0) {
+          delete newReactions[emoji];
+        } else {
+          newReactions[emoji] = newEmojiUsers;
+        }
+        await updateDoc(doc(db, 'photos', selectedPhoto.id), {
+          reactions: newReactions
+        });
+      } else {
+        const newReactions = { ...currentReactions, [emoji]: [...emojiUsers, user.uid] };
+        await updateDoc(doc(db, 'photos', selectedPhoto.id), {
+          reactions: newReactions
+        });
+      }
+    } catch (err) {
+      console.error('Failed to toggle reaction:', err);
+    }
+  };
+
   const gridStyle = { gridTemplateColumns: `100px repeat(${activeUsers.length > 0 ? activeUsers.length : 1}, 1fr)` };
+
+  const STANDARD_TIMEZONES = [
+    { label: 'New York (EST)', value: 'America/New_York' },
+    { label: 'London (GMT)', value: 'Europe/London' },
+    { label: 'Paris (CET)', value: 'Europe/Paris' },
+    { label: 'Tokyo (JST)', value: 'Asia/Tokyo' },
+    { label: 'Sydney (AEST)', value: 'Australia/Sydney' },
+    { label: 'Los Angeles (PST)', value: 'America/Los_Angeles' },
+  ];
 
   if (!isAuthLoading && !user) {
     return (
@@ -249,17 +458,34 @@ export default function App() {
                   <select 
                     value={referenceTimezone}
                     onChange={(e) => setReferenceTimezone(e.target.value)}
-                    className="bg-transparent border-b border-[#1A1A1A] outline-none cursor-pointer"
+                    className="bg-transparent border-b border-[#1A1A1A] outline-none cursor-pointer max-w-[120px]"
                   >
                     <option value="">Local Time</option>
-                    {activeUsers.map(s => (
-                      <option key={s.id} value={s.timezone}>{s.name}'s Time</option>
-                    ))}
+                    <optgroup label="Family">
+                      {activeUsers.map(s => (
+                        <option key={s.id} value={s.timezone}>{s.name}'s Time</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Global">
+                      {STANDARD_TIMEZONES.map(tz => (
+                        <option key={tz.value} value={tz.value}>{tz.label}</option>
+                      ))}
+                    </optgroup>
                   </select>
                 </div>
                 <button onClick={() => window.print()} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
                   <Download size={12} />
                   <span className="hidden md:inline">Chronicle PDF</span>
+                </button>
+                {notificationPermission === 'default' && (
+                  <button onClick={requestNotificationPermission} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity text-[#C5A059]">
+                    <Bell size={12} />
+                    <span className="hidden md:inline">Enable Alerts</span>
+                  </button>
+                )}
+                <button onClick={handleClearAllPhotos} className="flex items-center gap-1 opacity-60 hover:text-red-600 hover:opacity-100 transition-colors">
+                  <Trash2 size={12} />
+                  <span className="hidden md:inline">Clear My Photos</span>
                 </button>
                 <button onClick={handleNudge} disabled={isNudging} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30">
                   <Bell size={12} className={isNudging ? 'animate-bounce' : ''} />
@@ -439,37 +665,113 @@ export default function App() {
       {selectedPhoto && (
         <div className="fixed inset-0 z-[100] bg-[#F9F8F5] flex flex-col items-center justify-center p-4 md:p-10 animate-in fade-in duration-300 print:hidden">
           <button 
-            onClick={() => setSelectedPhoto(null)}
+            onClick={() => { setSelectedPhoto(null); setShowPhotoInfo(false); }}
             className="absolute top-6 left-6 md:top-10 md:left-10 flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-60 transition-opacity cursor-pointer"
           >
             <span className="text-xl leading-none">&larr;</span> Back to Matrix
           </button>
           
-          <div className="max-w-4xl w-full flex flex-col items-center gap-8">
-            <img 
-              src={selectedPhoto.imageUrl} 
-              alt="Full screen view" 
-              className="max-h-[60vh] md:max-h-[70vh] w-auto object-contain border-[0.5px] border-[#1A1A1A] p-3 bg-white shadow-xl" 
-            />
-            <div className="flex flex-col items-center gap-3 text-center">
+          <button
+            onClick={handleSharePhoto}
+            className={`absolute top-6 right-24 md:top-10 md:right-32 flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-100 transition-opacity cursor-pointer opacity-60`}
+          >
+            <Share size={16} />
+            <span className="hidden md:inline">Share</span>
+          </button>
+
+          <button
+            onClick={() => setShowPhotoInfo(!showPhotoInfo)}
+            className={`absolute top-6 right-6 md:top-10 md:right-10 flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-100 transition-opacity cursor-pointer ${showPhotoInfo ? 'opacity-100' : 'opacity-60'}`}
+          >
+            <Info size={16} />
+            <span className="hidden md:inline">Info</span>
+          </button>
+
+          <div className="max-w-4xl w-full flex flex-col items-center gap-8 overflow-y-auto max-h-[90vh] py-10 px-4">
+            <div className="relative inline-block">
+              <img 
+                src={selectedPhoto.imageUrl} 
+                alt="Full screen view" 
+                className="max-h-[50vh] md:max-h-[60vh] w-auto object-contain border-[0.5px] border-[#1A1A1A] p-3 bg-white shadow-xl" 
+              />
+              <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-white px-3 py-2 border-[0.5px] border-[#1A1A1A] shadow-md rounded-full">
+                {['❤️', '🔥', '😂', '😮'].map(emoji => {
+                  const count = (selectedPhoto.reactions?.[emoji] || []).length;
+                  const hasReacted = (selectedPhoto.reactions?.[emoji] || []).includes(user?.uid || '');
+                  return (
+                    <button 
+                      key={emoji}
+                      onClick={() => handleToggleReaction(emoji)}
+                      className={`flex items-center gap-1 px-2 py-1 rounded-full transition-colors ${hasReacted ? 'bg-[#F9F8F5]' : 'hover:bg-gray-50'}`}
+                    >
+                      <span className="text-base leading-none">{emoji}</span>
+                      {count > 0 && <span className="font-sans text-[10px] font-bold">{count}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="flex flex-col items-center gap-3 text-center transition-all duration-500 mt-4">
               <div className="font-serif text-3xl italic">
                 {activeUsers.find(s => s.id === selectedPhoto.userId)?.name || 'Unknown'}
               </div>
               <div className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-60">
                 {new Date(selectedPhoto.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
               </div>
-              {selectedPhoto.metadata && (
-                <div className="flex items-center gap-8 mt-6 font-sans text-[10px] uppercase tracking-widest border-t-[0.5px] border-[#1A1A1A] pt-6">
+              {showPhotoInfo && selectedPhoto.metadata && (
+                <div className="flex flex-wrap items-center justify-center gap-4 md:gap-8 mt-6 font-sans text-[10px] uppercase tracking-widest border-t-[0.5px] border-[#1A1A1A] pt-6 w-full max-w-lg animate-in fade-in slide-in-from-top-2">
+                  {selectedPhoto.metadata.location && (
+                    <div className="flex items-center gap-2">
+                      <MapPin size={14} strokeWidth={1.5} className="opacity-70" />
+                      <span>{selectedPhoto.metadata.location}</span>
+                    </div>
+                  )}
                   <div className="flex items-center gap-2">
                     <Thermometer size={14} strokeWidth={1.5} className="opacity-70" />
-                    <span>{selectedPhoto.metadata.temperature}°C Ambient</span>
+                    <span>{selectedPhoto.metadata.temperature}°C</span>
                   </div>
+                  {selectedPhoto.metadata.humidity !== undefined && (
+                    <div className="flex items-center gap-2">
+                      <Droplets size={14} strokeWidth={1.5} className="opacity-70" />
+                      <span>{selectedPhoto.metadata.humidity}%</span>
+                    </div>
+                  )}
                   <div className="flex items-center gap-2">
                     <Activity size={14} strokeWidth={1.5} className="opacity-70" />
-                    <span>{selectedPhoto.metadata.noiseLevel} dB Noise</span>
+                    <span>{selectedPhoto.metadata.noiseLevel} dB</span>
                   </div>
                 </div>
               )}
+
+              {/* Comments Section */}
+              <div className="w-full max-w-md mt-6 text-left">
+                <div className="flex flex-col gap-3 mb-6">
+                  {(selectedPhoto.comments || []).map(comment => (
+                    <div key={comment.id} className="bg-white p-3 border-[0.5px] border-[#1A1A1A] shadow-sm flex flex-col gap-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-serif font-bold italic text-sm">{comment.userName}</span>
+                        <span className="font-sans text-[8px] uppercase tracking-widest opacity-40">
+                          {new Date(comment.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                        </span>
+                      </div>
+                      <p className="font-sans text-xs">{comment.text}</p>
+                    </div>
+                  ))}
+                </div>
+                
+                <form onSubmit={handleAddComment} className="flex gap-2 w-full">
+                  <input 
+                    type="text" 
+                    value={commentText}
+                    onChange={(e) => setCommentText(e.target.value)}
+                    placeholder="Add a comment..."
+                    className="flex-1 bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-xs outline-none focus:border-opacity-50 transition-colors"
+                  />
+                  <button type="submit" disabled={!commentText.trim()} className="font-sans text-[10px] uppercase tracking-[0.2em] px-4 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30">
+                    Post
+                  </button>
+                </form>
+              </div>
             </div>
           </div>
         </div>

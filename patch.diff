@@ -1,0 +1,124 @@
+--- src/App.tsx
++++ src/App.tsx
+@@ -357,2 +357,36 @@
+ 
++  const handleAddComment = async (e: React.FormEvent) => {
++    e.preventDefault();
++    if (!selectedPhoto || !user || !commentText.trim()) return;
++
++    try {
++      const newComment = {
++        id: Date.now().toString(),
++        userId: user.uid,
++        userName: user.displayName?.split(' ')[0] || 'Unknown',
++        text: commentText.trim(),
++        timestamp: new Date().toISOString()
++      };
++
++      await updateDoc(doc(db, 'photos', selectedPhoto.id), {
++        comments: arrayUnion(newComment)
++      });
++      setCommentText('');
++    } catch (err) {
++      console.error('Failed to add comment:', err);
++    }
++  };
++
++  const handleToggleReaction = async (emoji: string) => {
++    if (!selectedPhoto || !user) return;
++    try {
++      const currentReactions = selectedPhoto.reactions || {};
++      const emojiUsers = currentReactions[emoji] || [];
++      const hasReacted = emojiUsers.includes(user.uid);
++      
++      if (hasReacted) {
++        // Remove reaction
++        // We have to read the document and update it manually since arrayRemove removes specific items
++        // Actually, we can just replace the whole reactions object
++        const newEmojiUsers = emojiUsers.filter(id => id !== user.uid);
++        const newReactions = { ...currentReactions };
++        if (newEmojiUsers.length === 0) {
++          delete newReactions[emoji];
++        } else {
++          newReactions[emoji] = newEmojiUsers;
++        }
++        await updateDoc(doc(db, 'photos', selectedPhoto.id), {
++          reactions: newReactions
++        });
++      } else {
++        // Add reaction
++        const newReactions = { ...currentReactions, [emoji]: [...emojiUsers, user.uid] };
++        await updateDoc(doc(db, 'photos', selectedPhoto.id), {
++          reactions: newReactions
++        });
++      }
++    } catch (err) {
++      console.error('Failed to toggle reaction:', err);
++    }
++  };
++
+   const gridStyle = { gridTemplateColumns: `100px repeat(${activeUsers.length > 0 ? activeUsers.length : 1}, 1fr)` };
+@@ -628,4 +662,10 @@
+ 
+-          <div className="max-w-4xl w-full flex flex-col items-center gap-8">
+-            <img 
+-              src={selectedPhoto.imageUrl} 
++          <div className="max-w-4xl w-full flex flex-col items-center gap-8 overflow-y-auto max-h-screen pt-20 pb-10 px-4">
++            <div className="relative">
++              <img 
++                src={selectedPhoto.imageUrl} 
+                 alt="Full screen view" 
+                 className="max-h-[60vh] md:max-h-[70vh] w-auto object-contain border-[0.5px] border-[#1A1A1A] p-3 bg-white shadow-xl" 
+               />
++              <div className="absolute -bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-white px-4 py-2 border-[0.5px] border-[#1A1A1A] shadow-lg rounded-full">
++                {['❤️', '🔥', '😂', '😮'].map(emoji => {
++                  const count = (selectedPhoto.reactions?.[emoji] || []).length;
++                  const hasReacted = (selectedPhoto.reactions?.[emoji] || []).includes(user?.uid || '');
++                  return (
++                    <button 
++                      key={emoji}
++                      onClick={() => handleToggleReaction(emoji)}
++                      className={`flex items-center gap-1 px-2 py-1 rounded-full hover:bg-gray-100 transition-colors ${hasReacted ? 'bg-gray-100' : ''}`}
++                    >
++                      <span className="text-lg leading-none">{emoji}</span>
++                      {count > 0 && <span className="font-sans text-[10px] font-bold">{count}</span>}
++                    </button>
++                  );
++                })}
++              </div>
++            </div>
++
+             <div className="flex flex-col items-center gap-3 text-center transition-all duration-500">
+@@ -666,3 +706,31 @@
+               )}
++
++              {/* Comments Section */}
++              <div className="w-full max-w-lg mt-8 text-left animate-in fade-in slide-in-from-top-2">
++                <div className="flex flex-col gap-4 mb-6">
++                  {(selectedPhoto.comments || []).map(comment => (
++                    <div key={comment.id} className="bg-white p-3 border-[0.5px] border-[#1A1A1A] shadow-sm">
++                      <div className="flex items-center justify-between mb-1">
++                        <span className="font-serif font-bold italic">{comment.userName}</span>
++                        <span className="font-sans text-[8px] uppercase tracking-widest opacity-50">
++                          {new Date(comment.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
++                        </span>
++                      </div>
++                      <p className="font-sans text-sm">{comment.text}</p>
++                    </div>
++                  ))}
++                </div>
++                
++                <form onSubmit={handleAddComment} className="flex gap-2">
++                  <input 
++                    type="text" 
++                    value={commentText}
++                    onChange={(e) => setCommentText(e.target.value)}
++                    placeholder="Add a comment..."
++                    className="flex-1 bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors"
++                  />
++                  <button type="submit" disabled={!commentText.trim()} className="font-sans text-[10px] uppercase tracking-[0.2em] px-4 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30">
++                    Post
++                  </button>
++                </form>
++              </div>
+             </div>
