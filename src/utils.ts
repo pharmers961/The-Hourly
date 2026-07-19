@@ -1,5 +1,22 @@
 import { Photo, TimeSlot, User, PhotoMetadata } from './types';
 
+// "America/Argentina/Buenos_Aires" -> "Buenos Aires"
+export function formatTimezoneCity(timezone: string): string {
+  if (!timezone) return 'Local';
+  const parts = timezone.split('/');
+  return (parts[parts.length - 1] || timezone).replace(/_/g, ' ');
+}
+
+// Current abbreviation for a zone (e.g. "PDT" in summer, "PST" in winter)
+export function getTimezoneAbbreviation(timezone: string, date: Date = new Date()): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: timezone, timeZoneName: 'short' }).formatToParts(date);
+    return parts.find(p => p.type === 'timeZoneName')?.value || '';
+  } catch {
+    return '';
+  }
+}
+
 // Helper function to simulate fetching environmental metadata at the moment of capture
 export async function fetchEnvironmentalMetadata(): Promise<PhotoMetadata> {
   return new Promise((resolve) => {

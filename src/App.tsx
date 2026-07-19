@@ -1,10 +1,23 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, Info, MapPin, Droplets, Share } from 'lucide-react';
-import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImage } from './utils';
+import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, Info, MapPin, Droplets, Share, Settings } from 'lucide-react';
+import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImage, formatTimezoneCity, getTimezoneAbbreviation } from './utils';
 import { db, auth } from './firebase';
 import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
 import { collection, query, onSnapshot, setDoc, doc, doc as firestoreDoc, getDoc, serverTimestamp, writeBatch, where, addDoc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { Photo, User as AppUser } from './types';
+
+const DEVICE_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const TZ_PROMPT_DISMISSED_KEY = 'hourly-tz-prompt-dismissed';
+
+// Abbreviations (EST/EDT etc.) are derived at render time so they stay correct year-round
+const STANDARD_TIMEZONES = [
+  { label: 'New York', value: 'America/New_York' },
+  { label: 'London', value: 'Europe/London' },
+  { label: 'Paris', value: 'Europe/Paris' },
+  { label: 'Tokyo', value: 'Asia/Tokyo' },
+  { label: 'Sydney', value: 'Australia/Sydney' },
+  { label: 'Los Angeles', value: 'America/Los_Angeles' },
+];
 
 export default function App() {
   const [photos, setPhotos] = useState<Photo[]>([]);
@@ -16,6 +29,8 @@ export default function App() {
   const [showPhotoInfo, setShowPhotoInfo] = useState(false);
   const [isNudging, setIsNudging] = useState(false);
   const [referenceTimezone, setReferenceTimezone] = useState<string>('');
+  const [showTimezoneSettings, setShowTimezoneSettings] = useState(false);
+  const [tzPromptDismissed, setTzPromptDismissed] = useState(false);
   const [newPhotoIds, setNewPhotoIds] = useState<Set<string>>(new Set());
   const [dismissedNudgeHour, setDismissedNudgeHour] = useState<string | null>(null);
   const [commentText, setCommentText] = useState('');
@@ -201,6 +216,41 @@ export default function App() {
   }, [users]);
 
   const timeSlots = useMemo(() => groupPhotosByHour(photos, activeUsers, referenceTimezone, currentTime), [photos, activeUsers, referenceTimezone, currentTime]);
+
+  // Profile timezone (stored in Firestore) vs the timezone this device is actually in
+  const myStoredTimezone: string | undefined = user ? (users[user.uid] as any)?.timezone : undefined;
+  const timezoneMismatch = !!myStoredTimezone && myStoredTimezone !== DEVICE_TIMEZONE;
+  const tzDismissKey = `${myStoredTimezone}|${DEVICE_TIMEZONE}`;
+  const showTimezoneBanner = timezoneMismatch && !tzPromptDismissed &&
+    localStorage.getItem(TZ_PROMPT_DISMISSED_KEY) !== tzDismissKey;
+
+  const profileTimezoneOptions = useMemo(() => {
+    const options = [{ value: DEVICE_TIMEZONE, label: `Device — ${formatTimezoneCity(DEVICE_TIMEZONE)}` }];
+    if (myStoredTimezone && myStoredTimezone !== DEVICE_TIMEZONE) {
+      options.push({ value: myStoredTimezone, label: formatTimezoneCity(myStoredTimezone) });
+    }
+    STANDARD_TIMEZONES.forEach(tz => {
+      if (!options.some(o => o.value === tz.value)) {
+        options.push({ value: tz.value, label: tz.label });
+      }
+    });
+    return options;
+  }, [myStoredTimezone]);
+
+  const handleUpdateProfileTimezone = async (timezone: string) => {
+    if (!user) return;
+    try {
+      await updateDoc(doc(db, 'users', user.uid), { timezone });
+      setTzPromptDismissed(true);
+    } catch (err) {
+      console.error('Failed to update profile timezone:', err);
+    }
+  };
+
+  const handleKeepProfileTimezone = () => {
+    localStorage.setItem(TZ_PROMPT_DISMISSED_KEY, tzDismissKey);
+    setTzPromptDismissed(true);
+  };
 
   const missedSiblings = useMemo(() => {
     // Only check if we are 30 minutes or more into the current hour window
@@ -415,15 +465,6 @@ export default function App() {
 
   const gridStyle = { gridTemplateColumns: `100px repeat(${activeUsers.length > 0 ? activeUsers.length : 1}, 1fr)` };
 
-  const STANDARD_TIMEZONES = [
-    { label: 'New York (EST)', value: 'America/New_York' },
-    { label: 'London (GMT)', value: 'Europe/London' },
-    { label: 'Paris (CET)', value: 'Europe/Paris' },
-    { label: 'Tokyo (JST)', value: 'Asia/Tokyo' },
-    { label: 'Sydney (AEST)', value: 'Australia/Sydney' },
-    { label: 'Los Angeles (PST)', value: 'America/Los_Angeles' },
-  ];
-
   if (!isAuthLoading && !user) {
     return (
       <div className="h-screen bg-[#F9F8F5] text-[#1A1A1A] font-serif flex flex-col items-center justify-center p-4 selection:bg-[#1A1A1A] selection:text-[#F9F8F5]">
@@ -463,15 +504,44 @@ export default function App() {
                     <option value="">Local Time</option>
                     <optgroup label="Family">
                       {activeUsers.map(s => (
-                        <option key={s.id} value={s.timezone}>{s.name}'s Time</option>
+                        <option key={s.id} value={s.timezone}>{s.name}'s Time — {formatTimezoneCity(s.timezone)}</option>
                       ))}
                     </optgroup>
                     <optgroup label="Global">
                       {STANDARD_TIMEZONES.map(tz => (
-                        <option key={tz.value} value={tz.value}>{tz.label}</option>
+                        <option key={tz.value} value={tz.value}>{tz.label} ({getTimezoneAbbreviation(tz.value)})</option>
                       ))}
                     </optgroup>
                   </select>
+                </div>
+                <div className="relative">
+                  <button
+                    onClick={() => setShowTimezoneSettings(s => !s)}
+                    className={`flex items-center gap-1 transition-opacity ${showTimezoneSettings ? 'opacity-100' : 'opacity-60 hover:opacity-100'}`}
+                  >
+                    <Settings size={12} />
+                    <span className="hidden md:inline">My Timezone</span>
+                  </button>
+                  {showTimezoneSettings && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setShowTimezoneSettings(false)} />
+                      <div className="absolute left-0 md:left-auto md:right-0 top-full mt-3 z-50 bg-[#F9F8F5] border-[0.5px] border-[#1A1A1A] shadow-xl p-4 w-64 text-left">
+                        <div className="text-[9px] uppercase tracking-widest opacity-50 mb-2">Profile Timezone</div>
+                        <select
+                          value={myStoredTimezone || DEVICE_TIMEZONE}
+                          onChange={(e) => handleUpdateProfileTimezone(e.target.value)}
+                          className="w-full bg-transparent border-b border-[#1A1A1A] outline-none cursor-pointer py-1 text-[11px] uppercase tracking-widest"
+                        >
+                          {profileTimezoneOptions.map(o => (
+                            <option key={o.value} value={o.value}>{o.label} ({getTimezoneAbbreviation(o.value)})</option>
+                          ))}
+                        </select>
+                        <p className="mt-3 text-[9px] tracking-wide opacity-50 leading-relaxed normal-case">
+                          Shown under your name in the grid, and used when family members view the journal in your time.
+                        </p>
+                      </div>
+                    </>
+                  )}
                 </div>
                 <button onClick={() => window.print()} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
                   <Download size={12} />
@@ -511,11 +581,37 @@ export default function App() {
             <span className="print:hidden">{currentTime.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', ...(referenceTimezone ? { timeZone: referenceTimezone } : {}) })} </span>
             <span className="hidden print:inline">{new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })} Chronicle</span>
             <span className="text-xs uppercase align-top ml-1 font-sans opacity-40 print:hidden">
-              {referenceTimezone ? referenceTimezone.split('/')[1] : (Intl.DateTimeFormat().resolvedOptions().timeZone.split('/')[1] || 'LOCAL')}
+              {formatTimezoneCity(referenceTimezone || DEVICE_TIMEZONE)}
             </span>
           </div>
         </div>
       </header>
+
+      {/* Timezone Mismatch Banner */}
+      {user && showTimezoneBanner && (
+        <div className="shrink-0 z-10 border-b-[0.5px] border-[#C5A059] bg-[#C5A059]/10 px-4 md:px-10 py-3 flex flex-col md:flex-row md:items-center gap-2 md:gap-6 font-sans print:hidden">
+          <div className="flex items-start md:items-center gap-2 text-[10px] md:text-[11px] uppercase tracking-widest leading-relaxed">
+            <Globe size={12} className="text-[#C5A059] shrink-0 mt-0.5 md:mt-0" />
+            <span>
+              Your profile timezone is {formatTimezoneCity(myStoredTimezone!)} ({getTimezoneAbbreviation(myStoredTimezone!)}), but this device is in {formatTimezoneCity(DEVICE_TIMEZONE)} ({getTimezoneAbbreviation(DEVICE_TIMEZONE)}).
+            </span>
+          </div>
+          <div className="flex items-center gap-4 md:ml-auto shrink-0">
+            <button
+              onClick={() => handleUpdateProfileTimezone(DEVICE_TIMEZONE)}
+              className="border-[0.5px] border-[#1A1A1A] px-3 py-1.5 text-[9px] uppercase tracking-[0.2em] hover:bg-[#1A1A1A] hover:text-[#F9F8F5] transition-colors"
+            >
+              Update to {formatTimezoneCity(DEVICE_TIMEZONE)}
+            </button>
+            <button
+              onClick={handleKeepProfileTimezone}
+              className="text-[9px] uppercase tracking-[0.2em] opacity-60 hover:opacity-100 transition-opacity"
+            >
+              Keep {formatTimezoneCity(myStoredTimezone!)}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Main Matrix View */}
       <main className="flex-grow overflow-auto relative print:overflow-visible">
@@ -531,7 +627,7 @@ export default function App() {
                   <div className={`w-1.5 h-1.5 md:w-2 md:h-2 rounded-full transition-colors duration-1000 print:hidden ${isSiblingOnline(sibling.id, sibling.name) ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-[#1A1A1A] opacity-20'}`} />
                 </div>
                 <span className="font-sans text-[8px] md:text-[9px] uppercase opacity-40 tracking-tighter truncate block px-1 print:text-black print:opacity-60">
-                  {sibling.timezone.replace('_', ' ')}
+                  {formatTimezoneCity(sibling.timezone)} ({getTimezoneAbbreviation(sibling.timezone)})
                 </span>
               </div>
             ))}
