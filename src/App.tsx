@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, Info, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon } from 'lucide-react';
+import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, Info, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon, Maximize, Clock } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import html2canvas from 'html2canvas';
-import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImage } from './utils';
+import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImage, getRelativeTime } from './utils';
 import { db, auth } from './firebase';
 import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
 import { collection, query, onSnapshot, setDoc, doc, doc as firestoreDoc, getDoc, serverTimestamp, writeBatch, where, addDoc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
@@ -19,18 +19,16 @@ export default function App() {
   const [isNudging, setIsNudging] = useState(false);
   const [referenceTimezone, setReferenceTimezone] = useState<string>('');
   const [newPhotoIds, setNewPhotoIds] = useState<Set<string>>(new Set());
+  const [loadedImages, setLoadedImages] = useState<Set<string>>(new Set());
   const [dismissedNudgeHour, setDismissedNudgeHour] = useState<string | null>(null);
   const [commentText, setCommentText] = useState('');
   const [showSettings, setShowSettings] = useState(false);
-  const [locationOverride, setLocationOverride] = useState(localStorage.getItem('locationOverride') || '');
+  const [localLocationInput, setLocalLocationInput] = useState('');
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [isGeneratingCollage, setIsGeneratingCollage] = useState(false);
+  const [isFullscreenPhoto, setIsFullscreenPhoto] = useState(false);
   const collageRef = useRef<HTMLDivElement>(null);
 
-  const handleLocationChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setLocationOverride(e.target.value);
-    localStorage.setItem('locationOverride', e.target.value);
-  };
   const initialPhotoLoaded = useRef(false);
   const lastNotifiedHour = useRef<number | null>(null);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
@@ -221,7 +219,7 @@ export default function App() {
     if (dbUser && dbUser.lastActive) {
       const activeTime = new Date(dbUser.lastActive).getTime();
       const now = new Date().getTime();
-      return (now - activeTime) <= 60 * 60 * 1000; // Active within last hour
+      return (now - activeTime) <= 10 * 60 * 1000; // Active within last 10 minutes
     }
     return false;
   };
@@ -238,14 +236,37 @@ export default function App() {
     }));
   }, [users]);
 
+  useEffect(() => {
+    if (showSettings && user) {
+      const displayLocation = activeUsers.find(u => u.id === user.uid)?.settings?.displayLocation || '';
+      setLocalLocationInput(displayLocation);
+    }
+  }, [showSettings, user, activeUsers]);
+
   const timeSlots = useMemo(() => {
     const isHour12 = activeUsers.find(u => u.id === user?.uid)?.settings?.timeFormat !== '24h';
     return groupPhotosByHour(photos, activeUsers, referenceTimezone, selectedDate, isHour12);
   }, [photos, activeUsers, referenceTimezone, selectedDate, user?.uid]);
 
+  const isSelectedDateToday = selectedDate.toDateString() === new Date().toDateString();
+
+  const displayedSlots = useMemo(() => {
+    return timeSlots.filter(slot => {
+      if (isSelectedDateToday) return true;
+      return Object.values(slot.photos).some(p => !!p);
+    });
+  }, [timeSlots, isSelectedDateToday]);
+
   const sortedPhotos = useMemo(() => {
     return [...photos].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   }, [photos]);
+
+  const getSiblingLocation = (sibling: AppUser) => {
+    if (sibling.settings?.displayLocation) return sibling.settings.displayLocation;
+    const latestPhoto = sortedPhotos.find(p => p.userId === sibling.id && p.metadata?.location);
+    if (latestPhoto && latestPhoto.metadata?.location) return latestPhoto.metadata.location;
+    return sibling.timezone.split('/').pop()?.replace(/_/g, ' ');
+  };
 
   const renderTemperature = (tempC: number) => {
     if (!user) return `${tempC}°C`;
@@ -276,6 +297,21 @@ export default function App() {
       setSelectedPhoto(sortedPhotos[currentIndex + 1]);
     }
   };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!selectedPhoto) return;
+      if (e.key === 'ArrowLeft') {
+        handleNextPhoto();
+      } else if (e.key === 'ArrowRight') {
+        handlePrevPhoto();
+      } else if (e.key === 'Escape') {
+        setSelectedPhoto(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedPhoto, sortedPhotos]);
 
   const touchStartX = useRef<number | null>(null);
   const touchEndX = useRef<number | null>(null);
@@ -404,7 +440,8 @@ export default function App() {
     setIsCapturing(true);
     try {
       const compressedImageUrl = await compressImage(file);
-      const metadata = await fetchEnvironmentalMetadata(locationOverride || undefined);
+      const userDisplayLocation = activeUsers.find(u => u.id === user.uid)?.settings?.displayLocation;
+      const metadata = await fetchEnvironmentalMetadata(userDisplayLocation || undefined);
       const photoId = `p${Date.now()}`;
       const newPhoto = {
         id: photoId,
@@ -682,8 +719,6 @@ export default function App() {
     });
   };
 
-  const isSelectedDateToday = selectedDate.toDateString() === new Date().toDateString();
-
   return (
     <div className="h-screen bg-[#F9F8F5] text-[#1A1A1A] font-serif flex flex-col selection:bg-[#1A1A1A] selection:text-[#F9F8F5] overflow-hidden print:overflow-visible print:bg-white print:h-auto">
       {/* Top Right Settings Button */}
@@ -704,16 +739,6 @@ export default function App() {
         </div>
         <div className="text-left md:text-right">
           <div className="font-sans text-[11px] uppercase tracking-widest flex items-center justify-start md:justify-end gap-4 mb-2 print:hidden">
-            {!isAuthLoading && user && (
-              <button 
-                onClick={handleExportCollage} 
-                disabled={isGeneratingCollage}
-                className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30"
-              >
-                <ImageIcon size={12} />
-                <span className="hidden md:inline">{isGeneratingCollage ? 'Exporting...' : 'Export Collage'}</span>
-              </button>
-            )}
             {!isAuthLoading && !user && (
               <button onClick={handleLogin} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
                 <LogIn size={12} />
@@ -759,25 +784,37 @@ export default function App() {
             <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end md:hidden print:hidden">Time</div>
             {activeUsers.map(sibling => (
               <div key={sibling.id} className="text-center">
-                <div className="flex items-center justify-center gap-2">
-                  <span className="block text-sm md:text-lg font-normal print:text-black">{sibling.name}</span>
-                  <div className={`w-1.5 h-1.5 md:w-2 md:h-2 rounded-full transition-colors duration-1000 print:hidden ${isSiblingOnline(sibling.id, sibling.name) ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-[#1A1A1A] opacity-20'}`} />
+                <div className="flex flex-col items-center justify-center gap-1 relative w-fit mx-auto">
+                  <span className="block text-sm md:text-lg font-normal print:text-black leading-tight">
+                    {sibling.name.split(' ')[0]}
+                    {sibling.name.split(' ').length > 1 && <br />}
+                    {sibling.name.split(' ').slice(1).join(' ')}
+                  </span>
+                  <div className={`absolute -right-2 top-0 w-1.5 h-1.5 md:w-2 md:h-2 rounded-full transition-colors duration-1000 print:hidden ${isSiblingOnline(sibling.id, sibling.name) ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-[#1A1A1A] opacity-20'}`} />
                 </div>
-                <span className="font-sans text-[8px] md:text-[9px] uppercase opacity-40 tracking-tighter truncate block px-1 print:text-black print:opacity-60">
-                  {sibling.settings?.displayLocation || sibling.timezone.split('/').pop()?.replace(/_/g, ' ')}
+                <span className="font-sans text-[8px] md:text-[9px] uppercase opacity-40 tracking-tighter truncate block px-1 print:text-black print:opacity-60 mt-1">
+                  {getSiblingLocation(sibling)}
                 </span>
               </div>
             ))}
           </div>
 
           {/* Content area */}
-          <div className="space-y-6 md:space-y-4 print:space-y-8">
-            {timeSlots.map((slot, idx) => {
+          <div className="space-y-6 md:space-y-4 print:space-y-8 relative">
+            {displayedSlots.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-20 text-[#1A1A1A] opacity-60">
+                <ImageIcon size={48} strokeWidth={1} className="mb-4" />
+                <p className="font-serif text-2xl italic mb-2">No photos yet</p>
+                <p className="font-sans text-[10px] uppercase tracking-[0.2em]">Check back later or choose another date</p>
+              </div>
+            ) : (
+              displayedSlots.map((slot, idx) => {
               // Assume first slot is current for demo purposes if it matches current hour, otherwise just style standard
-              const isCurrent = new Date().getHours() === new Date(slot.hourKey).getHours() && new Date().getDate() === new Date(slot.hourKey).getDate();
+              const isCurrent = isSelectedDateToday && new Date().getHours() === new Date(slot.hourKey).getHours();
               
               return (
                 <div 
+                  id={isCurrent ? 'current-hour-slot' : undefined}
                   key={slot.hourKey} 
                   className={`grid gap-4 p-2 md:p-0 transition-colors print:page-break-inside-avoid print:h-[200px] ${
                     isCurrent ? 'outline outline-1 outline-offset-4 outline-[#C5A059] bg-[#C5A059] bg-opacity-5 print:outline-none print:bg-transparent' : ''
@@ -809,11 +846,18 @@ export default function App() {
                             }}
                           >
                             <div className="bg-[#EAE8E4] flex-grow relative overflow-hidden group print:bg-transparent">
+                              {!loadedImages.has(photo.id) && (
+                                <div className="absolute inset-0 bg-[#EAE8E4] animate-pulse print:hidden" />
+                              )}
                               <img
                                 src={photo.imageUrl}
                                 alt={`${sibling.name}'s photo at ${slot.displayTime}`}
-                                className="absolute inset-0 w-full h-full object-cover transition-all duration-700 print:opacity-100"
+                                onLoad={() => setLoadedImages(prev => new Set(prev).add(photo.id))}
+                                className={`absolute inset-0 w-full h-full object-cover transition-all duration-700 print:opacity-100 ${loadedImages.has(photo.id) ? 'opacity-100' : 'opacity-0'}`}
                               />
+                              <div className="absolute top-2 left-2 flex items-center gap-1 bg-black/40 backdrop-blur-sm rounded-full px-1.5 py-0.5 text-xs text-white opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                                <span className="font-sans text-[8px]">{getRelativeTime(photo.timestamp)}</span>
+                              </div>
                               {photo.reactions && photo.reactions['❤️']?.length > 0 && (
                                 <div className="absolute top-2 right-2 flex items-center gap-1 bg-white/80 backdrop-blur-sm rounded-full px-1.5 py-0.5 text-xs text-red-500 shadow-sm">
                                   <Heart size={10} className="fill-current" />
@@ -835,9 +879,13 @@ export default function App() {
                             </div>
                           </div>
                         ) : (
-                          <div className={`h-full flex items-center justify-center transition-colors duration-500 print:bg-transparent print:border print:border-dashed print:border-black/20 ${isCurrent ? 'border-[0.5px] border-dashed border-[#C5A059]' : 'bg-[#1A1A1A]'} ${isCurrent && isNudging ? 'bg-[#C5A059] bg-opacity-20 animate-pulse print:animate-none print:bg-transparent' : ''}`}>
-                            <span className={`font-sans text-[8px] md:text-[9px] uppercase tracking-widest transition-colors duration-500 print:text-black/40 ${isCurrent ? 'text-[#C5A059]' : 'text-[#F9F8F5]'} ${isCurrent && isNudging ? 'opacity-100 font-bold' : 'opacity-60'}`}>
-                              {isCurrent && isNudging ? 'Nudged!' : (isCurrent ? 'Pending...' : 'Missed Moment')}
+                          <div 
+                            className={`h-full flex flex-col items-center justify-center transition-colors duration-500 print:bg-transparent print:border print:border-dashed print:border-black/20 ${isCurrent ? 'border-[0.5px] border-dashed border-[#C5A059]' : 'bg-[#1A1A1A]'} ${isCurrent && isNudging ? 'bg-[#C5A059] bg-opacity-20 animate-pulse print:animate-none print:bg-transparent' : ''} ${(isCurrent && sibling.id === user?.uid) ? 'cursor-pointer hover:bg-[#C5A059] hover:bg-opacity-10' : ''}`}
+                            onClick={() => { if (isCurrent && sibling.id === user?.uid) handleCaptureClick(); }}
+                          >
+                            {isCurrent && sibling.id === user?.uid && <Camera size={20} strokeWidth={1.5} className="text-[#C5A059] mb-1 md:mb-2 opacity-60" />}
+                            <span className={`font-sans text-[8px] md:text-[9px] uppercase tracking-widest transition-colors duration-500 text-center print:text-black/40 ${isCurrent ? 'text-[#C5A059]' : 'text-[#F9F8F5]'} ${isCurrent && isNudging ? 'opacity-100 font-bold' : 'opacity-60'}`}>
+                              {isCurrent && sibling.id === user?.uid ? 'Upload' : (isCurrent && isNudging ? 'Nudged!' : (isCurrent ? 'Pending' : 'Missed'))}
                             </span>
                           </div>
                         )}
@@ -846,7 +894,7 @@ export default function App() {
                   })}
                 </div>
               );
-            })}
+            }))}
           </div>
         </div>
       </main>
@@ -875,9 +923,32 @@ export default function App() {
         </div>
       )}
 
+      {/* Jump to Now Button */}
+      <div className="fixed bottom-6 right-6 z-50 print:hidden">
+        <button
+          onClick={() => {
+            if (!isSelectedDateToday) {
+              setSelectedDate(new Date());
+              setTimeout(() => {
+                document.getElementById('current-hour-slot')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }, 100);
+            } else {
+              document.getElementById('current-hour-slot')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+          }}
+          className="bg-white/80 backdrop-blur-sm border-[0.5px] border-[#1A1A1A] text-[#1A1A1A] p-3 rounded-full hover:bg-white transition-all shadow-lg hover:scale-110 active:scale-95 group flex items-center gap-2"
+          title={isSelectedDateToday ? "Jump to current hour" : "Jump to today"}
+        >
+          {isSelectedDateToday ? <Clock size={20} strokeWidth={1.5} /> : <Calendar size={20} strokeWidth={1.5} />}
+          <span className="text-[10px] font-sans font-medium tracking-[0.2em] uppercase hidden md:group-hover:inline max-w-0 md:group-hover:max-w-[100px] overflow-hidden transition-all duration-300 ease-in-out whitespace-nowrap">
+            {isSelectedDateToday ? "Now" : "Today"}
+          </span>
+        </button>
+      </div>
+
       {/* Missed Sync Toast */}
       {missedSiblings.length > 0 && (
-        <div className="fixed bottom-6 right-6 md:bottom-10 md:right-10 z-50 animate-in slide-in-from-bottom-8 fade-in duration-500 print:hidden">
+        <div className="fixed bottom-24 right-6 md:bottom-28 md:right-10 z-50 animate-in slide-in-from-bottom-8 fade-in duration-500 print:hidden">
           <div className="bg-[#1A1A1A] text-[#F9F8F5] shadow-2xl p-4 md:p-5 flex flex-col gap-3 max-w-[280px] md:max-w-sm relative">
             <button 
               onClick={handleDismissNudge}
@@ -908,38 +979,50 @@ export default function App() {
       {selectedPhoto && (
         <div className="fixed inset-0 z-[100] bg-[#F9F8F5] flex flex-col items-center justify-center p-4 md:p-10 animate-in fade-in duration-300 print:hidden">
           <button 
-            onClick={() => { setSelectedPhoto(null); setShowPhotoInfo(false); }}
+            onClick={() => { setSelectedPhoto(null); setShowPhotoInfo(false); setIsFullscreenPhoto(false); }}
             className="absolute top-6 left-6 md:top-10 md:left-10 flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-60 transition-opacity cursor-pointer"
           >
             <span className="text-xl leading-none">&larr;</span> Back to Matrix
           </button>
           
-          <button
-            onClick={handleSharePhoto}
-            className={`absolute top-6 right-24 md:top-10 md:right-32 flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-100 transition-opacity cursor-pointer opacity-60`}
-          >
-            <Share size={16} />
-            <span className="hidden md:inline">Share</span>
-          </button>
+          <div className="absolute top-6 right-6 md:top-10 md:right-10 flex items-center gap-4 md:gap-8 z-50">
+            {selectedPhoto.metadata?.lat && (
+              <button
+                onClick={() => window.open(`https://www.google.com/maps/search/?api=1&query=${selectedPhoto.metadata!.lat},${selectedPhoto.metadata!.lng}`, '_blank')}
+                className="flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-100 transition-opacity cursor-pointer opacity-60"
+              >
+                <MapPin size={16} />
+                <span className="hidden md:inline">Map</span>
+              </button>
+            )}
+            <button
+              onClick={handleSharePhoto}
+              className="flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-100 transition-opacity cursor-pointer opacity-60"
+            >
+              <Share size={16} />
+              <span className="hidden md:inline">Share</span>
+            </button>
+            <button
+              onClick={() => setShowPhotoInfo(!showPhotoInfo)}
+              className={`flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-100 transition-opacity cursor-pointer ${showPhotoInfo ? 'opacity-100' : 'opacity-60'}`}
+            >
+              <Info size={16} />
+              <span className="hidden md:inline">Info</span>
+            </button>
+          </div>
 
-          <button
-            onClick={() => setShowPhotoInfo(!showPhotoInfo)}
-            className={`absolute top-6 right-6 md:top-10 md:right-10 flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-100 transition-opacity cursor-pointer ${showPhotoInfo ? 'opacity-100' : 'opacity-60'}`}
-          >
-            <Info size={16} />
-            <span className="hidden md:inline">Info</span>
-          </button>
-
-          <div className="max-w-4xl w-full flex flex-col items-center gap-8 overflow-y-auto max-h-[90vh] py-10 px-4 relative">
-            <div className="flex flex-col items-center gap-2 mb-2 text-center">
-              <span className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-60">Chronicle by</span>
-              <span className="font-serif text-3xl md:text-4xl italic">
-                {activeUsers.find(s => s.id === selectedPhoto.userId)?.name || 'Unknown'}
-              </span>
-            </div>
+          <div className={`${isFullscreenPhoto ? 'w-full h-full flex flex-col items-center justify-center p-0' : 'max-w-4xl w-full flex flex-col items-center gap-8 overflow-y-auto max-h-[90vh] py-10 px-4'} relative transition-all duration-300`}>
+            {!isFullscreenPhoto && (
+              <div className="flex flex-col items-center gap-2 mb-2 text-center">
+                <span className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-60">Chronicle by</span>
+                <span className="font-serif text-3xl md:text-4xl italic">
+                  {activeUsers.find(s => s.id === selectedPhoto.userId)?.name || 'Unknown'}
+                </span>
+              </div>
+            )}
             
             <div 
-              className="relative flex items-center justify-center w-full group"
+              className={`relative flex items-center justify-center w-full group ${isFullscreenPhoto ? 'h-full' : ''}`}
               onTouchStart={handleTouchStart}
               onTouchMove={handleTouchMove}
               onTouchEnd={handleTouchEnd}
@@ -961,17 +1044,27 @@ export default function App() {
                 <ChevronLeft size={32} strokeWidth={1} className="text-[#1A1A1A]" />
               </button>
 
-              <div className="relative inline-block mx-8 md:mx-20 max-w-full">
-                <TransformWrapper>
-                  <TransformComponent>
+              <div className={`relative inline-block md:mx-20 ${isFullscreenPhoto ? 'w-full h-full flex items-center justify-center' : 'mx-8 max-w-full'}`}>
+                <TransformWrapper doubleClick={{ disabled: true }} pinch={{ step: 5 }}>
+                  <TransformComponent wrapperStyle={isFullscreenPhoto ? { width: '100%', height: '100%' } : {}}>
                     <img 
                       src={selectedPhoto.imageUrl} 
                       alt="Full screen view" 
-                      className="max-h-[50vh] md:max-h-[60vh] w-auto object-contain border-[0.5px] border-[#1A1A1A] p-3 bg-white shadow-xl cursor-zoom-in" 
+                      onDoubleClick={(e) => { e.stopPropagation(); handleToggleReaction('❤️'); }}
+                      className={`${isFullscreenPhoto ? 'h-screen w-auto max-w-full object-contain border-none p-0' : 'max-h-[50vh] md:max-h-[60vh] w-auto object-contain border-[0.5px] border-[#1A1A1A] p-3 shadow-xl'} bg-white cursor-zoom-in transition-all`} 
                     />
                   </TransformComponent>
                 </TransformWrapper>
-              <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-white px-3 py-2 border-[0.5px] border-[#1A1A1A] shadow-md rounded-full">
+
+                <button
+                  onClick={() => setIsFullscreenPhoto(!isFullscreenPhoto)}
+                  className={`absolute ${isFullscreenPhoto ? 'top-4 right-4' : 'top-4 right-4'} z-50 p-2 bg-white/80 backdrop-blur-sm rounded-full opacity-60 hover:opacity-100 transition-opacity`}
+                >
+                  <Maximize size={16} className="text-[#1A1A1A]" />
+                </button>
+
+              {!isFullscreenPhoto && (
+                <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-white px-3 py-2 border-[0.5px] border-[#1A1A1A] shadow-md rounded-full z-20">
                 {['❤️', '🔥', '😂', '😮'].map(emoji => {
                   const count = (selectedPhoto.reactions?.[emoji] || []).length;
                   const hasReacted = (selectedPhoto.reactions?.[emoji] || []).includes(user?.uid || '');
@@ -987,6 +1080,7 @@ export default function App() {
                   );
                 })}
               </div>
+              )}
             </div>
 
               <button
@@ -1101,7 +1195,7 @@ export default function App() {
           <div className="bg-[#F9F8F5] p-6 md:p-10 w-full max-w-md max-h-[90vh] overflow-y-auto shadow-2xl relative animate-in fade-in zoom-in-95 duration-200 border-[0.5px] border-[#1A1A1A]">
             <button 
               onClick={() => {
-                handleSaveSettings({ displayLocation: locationOverride });
+                handleSaveSettings({ displayLocation: localLocationInput });
                 setShowSettings(false);
               }}
               className="absolute top-4 right-4 opacity-60 hover:opacity-100 transition-opacity"
@@ -1115,9 +1209,9 @@ export default function App() {
                 <label className="font-sans text-[10px] uppercase tracking-widest opacity-60">Display Location</label>
                 <input
                   type="text"
-                  value={locationOverride}
-                  onChange={handleLocationChange}
-                  onBlur={() => handleSaveSettings({ displayLocation: locationOverride })}
+                  value={localLocationInput}
+                  onChange={(e) => setLocalLocationInput(e.target.value)}
+                  onBlur={() => handleSaveSettings({ displayLocation: localLocationInput })}
                   placeholder="e.g. San Francisco"
                   className="bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors placeholder:opacity-30"
                 />
@@ -1216,6 +1310,10 @@ export default function App() {
                   <button onClick={() => window.print()} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity w-fit">
                     <Download size={14} />
                     <span>Download Chronicle PDF</span>
+                  </button>
+                  <button onClick={handleExportCollage} disabled={isGeneratingCollage} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity disabled:opacity-30 w-fit">
+                    <ImageIcon size={14} />
+                    <span>{isGeneratingCollage ? 'Exporting...' : 'Export Collage Image'}</span>
                   </button>
                 </div>
 

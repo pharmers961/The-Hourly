@@ -90,6 +90,19 @@ export function compressImage(file: File): Promise<string> {
   });
 }
 
+export function getRelativeTime(timestamp: string): string {
+  const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+  const timeMs = new Date(timestamp).getTime();
+  const diffDays = Math.round((timeMs - Date.now()) / (1000 * 60 * 60 * 24));
+  const diffHours = Math.round((timeMs - Date.now()) / (1000 * 60 * 60));
+  const diffMinutes = Math.round((timeMs - Date.now()) / (1000 * 60));
+  
+  if (Math.abs(diffMinutes) < 1) return 'Just now';
+  if (Math.abs(diffMinutes) < 60) return rtf.format(diffMinutes, 'minute');
+  if (Math.abs(diffHours) < 24) return rtf.format(diffHours, 'hour');
+  return rtf.format(diffDays, 'day');
+}
+
 export function groupPhotosByHour(photos: Photo[], users: User[], timeZone?: string, selectedDate: Date = new Date(), hour12: boolean = true): TimeSlot[] {
   const slots = new Map<string, TimeSlot>();
 
