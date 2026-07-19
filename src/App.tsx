@@ -46,6 +46,8 @@ export default function App() {
   const [newGroupName, setNewGroupName] = useState('');
   const [manageGroupName, setManageGroupName] = useState('');
   const [groupMemberRoles, setGroupMemberRoles] = useState<{ profileId: string; role: 'owner' | 'member' }[]>([]);
+  const [importSourceGroupId, setImportSourceGroupId] = useState('');
+  const [isImportingPhotos, setIsImportingPhotos] = useState(false);
   const [hasPendingInvite] = useState(() => !!(localStorage.getItem('pendingJoinCode') || new URLSearchParams(window.location.search).get('join')));
 
   // Multi-group capture picker
@@ -904,6 +906,22 @@ export default function App() {
     } catch (err) {
       console.error('Failed to transfer ownership:', err);
       showToast(`Failed to transfer creator role${errDetail(err)}`);
+    }
+  };
+
+  const handleImportPhotos = async () => {
+    if (!selectedGroup || !importSourceGroupId) return;
+    setIsImportingPhotos(true);
+    try {
+      const count = await api.importMyPhotos(importSourceGroupId, selectedGroup.id);
+      await refreshData();
+      showToast(count > 0 ? `Imported ${count} photo${count === 1 ? '' : 's'}` : 'No new photos to import', 'success');
+      setImportSourceGroupId('');
+    } catch (err) {
+      console.error('Failed to import photos:', err);
+      showToast(`Failed to import photos${errDetail(err)}`);
+    } finally {
+      setIsImportingPhotos(false);
     }
   };
 
@@ -1960,6 +1978,31 @@ export default function App() {
                       </div>
                     ))}
                   </div>
+
+                  {groups.length > 1 && (
+                    <div className="flex flex-col gap-2">
+                      <label className="font-sans text-[10px] uppercase tracking-widest opacity-60">Import My Photos From</label>
+                      <div className="flex gap-2">
+                        <select
+                          value={importSourceGroupId}
+                          onChange={(e) => setImportSourceGroupId(e.target.value)}
+                          className="flex-1 bg-transparent border-b-[0.5px] border-[#1A1A1A] outline-none py-1 font-sans text-sm cursor-pointer"
+                        >
+                          <option value="">Choose a group...</option>
+                          {groups.filter(g => g.id !== selectedGroup.id).map(g => (
+                            <option key={g.id} value={g.id}>{g.name}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={handleImportPhotos}
+                          disabled={!importSourceGroupId || isImportingPhotos}
+                          className="font-sans text-[10px] uppercase tracking-widest px-3 border-[0.5px] border-[#1A1A1A] opacity-80 hover:opacity-100 transition-opacity disabled:opacity-30"
+                        >
+                          {isImportingPhotos ? '...' : 'Import'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="flex items-center gap-6">
                     <button onClick={handleLeaveGroup} className="flex items-center gap-2 text-sm text-red-600 opacity-80 hover:opacity-100 transition-colors w-fit">

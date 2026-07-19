@@ -366,6 +366,40 @@ begin
 end;
 $$;
 
+-- Retroactively shares the caller's own photos from one group they belong to
+-- into another group they belong to. Only ever touches the caller's own
+-- photos — never pulls in anyone else's without their say-so.
+create or replace function public.import_my_photos(p_source_group_id uuid, p_target_group_id uuid)
+returns integer
+language plpgsql security definer set search_path = public
+as $$
+declare
+  v_profile_id uuid := public.my_profile_id();
+  v_count integer;
+begin
+  if v_profile_id is null then
+    raise exception 'Not signed in.';
+  end if;
+  if not public.is_group_member(p_source_group_id) then
+    raise exception 'You are not a member of the source group.';
+  end if;
+  if not public.is_group_member(p_target_group_id) then
+    raise exception 'You are not a member of the target group.';
+  end if;
+
+  insert into photo_groups (photo_id, group_id)
+  select pg.photo_id, p_target_group_id
+  from photo_groups pg
+  join photos ph on ph.id = pg.photo_id
+  where pg.group_id = p_source_group_id
+    and ph.profile_id = v_profile_id
+  on conflict (photo_id, group_id) do nothing;
+
+  get diagnostics v_count = row_count;
+  return v_count;
+end;
+$$;
+
 -- ---------------------------------------------------------------------------
 -- Row-level security
 -- ---------------------------------------------------------------------------

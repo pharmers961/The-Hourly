@@ -210,6 +210,14 @@ export async function transferOwnership(groupId: string, newOwnerProfileId: stri
   if (error) throw error;
 }
 
+// Retroactively shares the caller's own photos from sourceGroupId into
+// targetGroupId. Returns how many photos were newly linked.
+export async function importMyPhotos(sourceGroupId: string, targetGroupId: string): Promise<number> {
+  const { data, error } = await supabase.rpc('import_my_photos', { p_source_group_id: sourceGroupId, p_target_group_id: targetGroupId });
+  if (error) throw describeError('import failed', error);
+  return (data as number) || 0;
+}
+
 export async function deleteGroup(groupId: string): Promise<void> {
   const { error } = await supabase.from('groups').delete().eq('id', groupId);
   if (error) throw error;
