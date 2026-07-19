@@ -163,9 +163,13 @@ begin
 end;
 $$;
 
+-- search_path includes `extensions` because Supabase installs pgcrypto
+-- there by default, not in `public`, so an unqualified gen_random_bytes()
+-- call fails with "function ... does not exist" without it.
 create or replace function public.generate_invite_code()
 returns text
 language sql volatile
+set search_path = public, extensions
 as $$
   select translate(encode(gen_random_bytes(9), 'base64'), '+/=', 'xyz')
 $$;
