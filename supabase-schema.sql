@@ -100,7 +100,8 @@ begin
   if found then
     update profiles
       set last_active = now(),
-          timezone = coalesce(nullif(p_timezone, ''), timezone)
+          timezone = coalesce(nullif(p_timezone, ''), timezone),
+          name = coalesce(nullif(p_name, ''), name)
       where id = v_profile.id
       returning * into v_profile;
     return v_profile;
@@ -112,7 +113,8 @@ begin
     update profiles
       set auth_id = auth.uid(),
           last_active = now(),
-          timezone = coalesce(nullif(p_timezone, ''), timezone)
+          timezone = coalesce(nullif(p_timezone, ''), timezone),
+          name = coalesce(nullif(p_name, ''), name)
       where id = v_profile.id
       returning * into v_profile;
     return v_profile;

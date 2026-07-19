@@ -95,8 +95,8 @@ export async function fetchAllData(): Promise<AppData> {
   return { profiles, photos };
 }
 
-export async function ensureProfile(timezone: string): Promise<AppUser & { email: string }> {
-  const { data, error } = await supabase.rpc('ensure_profile', { p_timezone: timezone });
+export async function ensureProfile(timezone: string, name?: string): Promise<AppUser & { email: string }> {
+  const { data, error } = await supabase.rpc('ensure_profile', { p_timezone: timezone, p_name: name || null });
   if (error) throw error;
   const row = data as ProfileRow;
   return {
