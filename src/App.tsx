@@ -569,10 +569,19 @@ export default function App() {
 
   const handleMigrateFromFirebase = async () => {
     if (isMigrating) return;
+    const serviceRoleKey = window.prompt(
+      'One-time admin action: paste your Supabase service_role secret key ' +
+      '(Project Settings → API → service_role secret).\n\n' +
+      'This bypasses your row-level security policies so old Firebase photos can be ' +
+      'imported. It is used only for this one action, held in memory in your browser, ' +
+      'and is never saved, logged, or sent anywhere else.'
+    );
+    if (!serviceRoleKey) return;
+
     setIsMigrating(true);
     setMigrateStatus('Starting...');
     try {
-      const summary = await api.migrateFromFirebase(setMigrateStatus);
+      const summary = await api.migrateFromFirebase(setMigrateStatus, serviceRoleKey.trim());
       // The import may have corrected this user's own name/timezone
       const refreshedProfile = await api.ensureProfile(Intl.DateTimeFormat().resolvedOptions().timeZone).catch(() => null);
       if (refreshedProfile) setProfile(refreshedProfile);

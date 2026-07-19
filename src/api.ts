@@ -1,6 +1,6 @@
 // Supabase data layer for The Hourly. All reads map database rows into the
 // app's existing Photo/User shapes so the UI is agnostic of the backend.
-import { supabase } from './supabase';
+import { supabase, createAdminClient } from './supabase';
 import { Photo, User as AppUser, PhotoMetadata, UserSettings } from './types';
 
 interface ProfileRow {
@@ -263,7 +263,11 @@ export function subscribeRealtime(profileId: string, handlers: RealtimeHandlers)
 // One-time Firebase -> Supabase import
 // ---------------------------------------------------------------------------
 
-export async function migrateFromFirebase(onProgress: (message: string) => void): Promise<string> {
+export async function migrateFromFirebase(onProgress: (message: string) => void, serviceRoleKey: string): Promise<string> {
+  // Bypasses row-level security entirely for this one-time admin operation;
+  // never persisted, only held for the duration of this call
+  const admin = createAdminClient(serviceRoleKey);
+
   onProgress('Connecting to Firebase...');
   const [{ db, auth }, { signInWithPopup, GoogleAuthProvider }, { collection, getDocs }] = await Promise.all([
     import('./firebase'),
@@ -288,7 +292,7 @@ export async function migrateFromFirebase(onProgress: (message: string) => void)
     const email = (u.email || '').toLowerCase();
     if (!email) continue;
 
-    const { data: existing } = await supabase
+    const { data: existing } = await admin
       .from('profiles')
       .select('id, firebase_uid, name')
       .or(`firebase_uid.eq.${userDoc.id},email.eq.${email}`)
@@ -304,10 +308,10 @@ export async function migrateFromFirebase(onProgress: (message: string) => void)
       if (u.name) updates.name = u.name;
       if (u.timezone) updates.timezone = u.timezone;
       if (Object.keys(updates).length > 0) {
-        await supabase.from('profiles').update(updates).eq('id', existing[0].id);
+        await admin.from('profiles').update(updates).eq('id', existing[0].id);
       }
     } else {
-      const { data: created, error } = await supabase
+      const { data: created, error } = await admin
         .from('profiles')
         .insert({
           email,
@@ -324,7 +328,7 @@ export async function migrateFromFirebase(onProgress: (message: string) => void)
   }
 
   // Skip photos that were already imported (idempotent re-runs)
-  const { data: alreadyImported } = await supabase.from('photos').select('firebase_id').not('firebase_id', 'is', null);
+  const { data: alreadyImported } = await admin.from('photos').select('firebase_id').not('firebase_id', 'is', null);
   const done = new Set((alreadyImported || []).map(r => r.firebase_id as string));
 
   let imported = 0;
@@ -354,7 +358,7 @@ export async function migrateFromFirebase(onProgress: (message: string) => void)
 
     const imageBlob = await (await fetch(p.imageUrl)).blob();
     const path = `migrated/${photoDoc.id}.jpg`;
-    const { error: uploadError } = await supabase.storage.from('photos').upload(path, imageBlob, {
+    const { error: uploadError } = await admin.storage.from('photos').upload(path, imageBlob, {
       contentType: 'image/jpeg',
       upsert: true,
     });
@@ -362,7 +366,7 @@ export async function migrateFromFirebase(onProgress: (message: string) => void)
       throw describeError('storage upload failed', uploadError);
     }
 
-    const { data: photoRow, error: insertError } = await supabase
+    const { data: photoRow, error: insertError } = await admin
       .from('photos')
       .insert({
         profile_id: profileId,
@@ -380,7 +384,7 @@ export async function migrateFromFirebase(onProgress: (message: string) => void)
     for (const c of p.comments || []) {
       const commentProfile = uidToProfileId[c.userId];
       if (!commentProfile) continue;
-      await supabase.from('comments').insert({
+      await admin.from('comments').insert({
         photo_id: photoRow.id,
         profile_id: commentProfile,
         text: c.text,
@@ -391,7 +395,7 @@ export async function migrateFromFirebase(onProgress: (message: string) => void)
       for (const uid of uids) {
         const reactionProfile = uidToProfileId[uid];
         if (!reactionProfile) continue;
-        await supabase.from('reactions').upsert(
+        await admin.from('reactions').upsert(
           { photo_id: photoRow.id, profile_id: reactionProfile, emoji },
           { onConflict: 'photo_id,profile_id,emoji', ignoreDuplicates: true }
         );
