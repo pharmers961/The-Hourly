@@ -63,6 +63,15 @@ export default function App() {
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
   };
 
+  // Appends the real error text (Supabase errors are plain objects, not JS
+  // Error instances, but api.ts wraps most of them via describeError so
+  // .message is usually populated either way) so toasts are diagnosable
+  // without needing devtools.
+  const errDetail = (err: unknown): string => {
+    const message = err instanceof Error ? err.message : typeof err === 'object' && err && 'message' in err ? String((err as { message: unknown }).message) : '';
+    return message ? `: ${message.slice(0, 300)}` : '. Please try again.';
+  };
+
   // Safety net: surface otherwise-silent crashes (e.g. a rejected promise
   // no local catch handles) as a toast instead of the app just appearing to
   // do nothing when a button is tapped
@@ -825,7 +834,7 @@ export default function App() {
       showToast(`"${group.name}" created`, 'success');
     } catch (err) {
       console.error('Failed to create group:', err);
-      showToast('Failed to create group. Please try again.');
+      showToast(`Failed to create group${errDetail(err)}`);
     }
   };
 
@@ -839,7 +848,7 @@ export default function App() {
       showToast('Group renamed', 'success');
     } catch (err) {
       console.error('Failed to rename group:', err);
-      showToast('Failed to rename group. Please try again.');
+      showToast(`Failed to rename group${errDetail(err)}`);
     }
   };
 
@@ -864,7 +873,7 @@ export default function App() {
       showToast('New invite link generated', 'success');
     } catch (err) {
       console.error('Failed to regenerate invite code:', err);
-      showToast('Failed to regenerate invite link. Please try again.');
+      showToast(`Failed to regenerate invite link${errDetail(err)}`);
     }
   };
 
@@ -878,7 +887,7 @@ export default function App() {
       showToast('Member removed', 'success');
     } catch (err) {
       console.error('Failed to remove member:', err);
-      showToast('Failed to remove member. Please try again.');
+      showToast(`Failed to remove member${errDetail(err)}`);
     }
   };
 
@@ -894,7 +903,7 @@ export default function App() {
       showToast('Creator role transferred', 'success');
     } catch (err) {
       console.error('Failed to transfer ownership:', err);
-      showToast('Failed to transfer creator role. Please try again.');
+      showToast(`Failed to transfer creator role${errDetail(err)}`);
     }
   };
 
@@ -918,7 +927,7 @@ export default function App() {
         showToast('Left and deleted group', 'success');
       } catch (err) {
         console.error('Failed to delete group on leave:', err);
-        showToast('Failed to leave group. Please try again.');
+        showToast(`Failed to leave group${errDetail(err)}`);
       }
       return;
     }
@@ -931,7 +940,7 @@ export default function App() {
       showToast('Left group', 'success');
     } catch (err) {
       console.error('Failed to leave group:', err);
-      showToast('Failed to leave group. Please try again.');
+      showToast(`Failed to leave group${errDetail(err)}`);
     }
   };
 
@@ -945,7 +954,7 @@ export default function App() {
       showToast('Group deleted', 'success');
     } catch (err) {
       console.error('Failed to delete group:', err);
-      showToast('Failed to delete group. Please try again.');
+      showToast(`Failed to delete group${errDetail(err)}`);
     }
   };
 
