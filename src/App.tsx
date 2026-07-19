@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, Info, MapPin, Droplets, Share, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, Info, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings } from 'lucide-react';
+import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImage } from './utils';
 import { db, auth } from './firebase';
 import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
@@ -19,6 +20,7 @@ export default function App() {
   const [newPhotoIds, setNewPhotoIds] = useState<Set<string>>(new Set());
   const [dismissedNudgeHour, setDismissedNudgeHour] = useState<string | null>(null);
   const [commentText, setCommentText] = useState('');
+  const [showSettings, setShowSettings] = useState(false);
   const [locationOverride, setLocationOverride] = useState(localStorage.getItem('locationOverride') || '');
 
   const handleLocationChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -151,10 +153,34 @@ export default function App() {
       });
     });
 
+    let isFirstNotificationsLoad = true;
+    const notificationsQuery = query(collection(db, 'notifications'), where('toUserId', '==', user.uid));
+    const unsubscribeNotifications = onSnapshot(notificationsQuery, (snapshot) => {
+      if (isFirstNotificationsLoad) {
+        isFirstNotificationsLoad = false;
+        return;
+      }
+      
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added') {
+          const notif = change.doc.data();
+          if (notificationPermission === 'granted') {
+            new Notification('The Hourly', {
+              body: notif.type === 'mention' 
+                ? `${notif.fromUserName} mentioned you: ${notif.text}`
+                : `${notif.fromUserName} commented on your photo: ${notif.text}`,
+              icon: '/favicon.svg'
+            });
+          }
+        }
+      });
+    });
+
     return () => {
       unsubscribePhotos();
       unsubscribeUsers();
       unsubscribeNudges();
+      unsubscribeNotifications();
     };
   }, [user, notificationPermission]);
 
@@ -203,15 +229,33 @@ export default function App() {
       id: (u as any).id || u.uid || '',
       name: (u as any).name || 'Unknown',
       timezone: (u as any).timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
-      lastActive: u.lastActive
+      lastActive: u.lastActive,
+      settings: (u as any).settings
     }));
   }, [users]);
 
-  const timeSlots = useMemo(() => groupPhotosByHour(photos, activeUsers, referenceTimezone, currentTime), [photos, activeUsers, referenceTimezone, currentTime]);
+  const timeSlots = useMemo(() => {
+    const isHour12 = activeUsers.find(u => u.id === user?.uid)?.settings?.timeFormat !== '24h';
+    return groupPhotosByHour(photos, activeUsers, referenceTimezone, currentTime, isHour12);
+  }, [photos, activeUsers, referenceTimezone, currentTime, user?.uid]);
 
   const sortedPhotos = useMemo(() => {
     return [...photos].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   }, [photos]);
+
+  const renderTemperature = (tempC: number) => {
+    if (!user) return `${tempC}°C`;
+    const unit = activeUsers.find(u => u.id === user.uid)?.settings?.temperatureUnit || 'C';
+    if (unit === 'F') {
+      return `${Math.round(tempC * 9/5 + 32)}°F`;
+    }
+    return `${tempC}°C`;
+  };
+
+  const renderTime = (isoString: string) => {
+    const isHour12 = activeUsers.find(u => u.id === user?.uid)?.settings?.timeFormat !== '24h';
+    return new Date(isoString).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: isHour12 });
+  };
 
   const handleNextPhoto = () => {
     if (!selectedPhoto) return;
@@ -373,6 +417,18 @@ export default function App() {
     }
   };
 
+  const handleSaveSettings = async (updates: Partial<AppUser['settings']>) => {
+    if (!user) return;
+    try {
+      const userRef = doc(db, 'users', user.uid);
+      const currentUserData = Object.values(users).find(u => u.uid === user.uid) as any;
+      const newSettings = { ...(currentUserData?.settings || { temperatureUnit: 'C', timeFormat: '12h' }), ...updates };
+      await updateDoc(userRef, { settings: newSettings });
+    } catch (err) {
+      console.error('Failed to save settings:', err);
+    }
+  };
+
   const handleClearAllPhotos = async () => {
     if (!window.confirm('Are you sure you want to delete all your photos? This cannot be undone.')) return;
     
@@ -432,6 +488,35 @@ export default function App() {
       await updateDoc(doc(db, 'photos', selectedPhoto.id), {
         comments: arrayUnion(newComment)
       });
+      
+      const mentionedUsers = activeUsers.filter(u => 
+        newComment.text.includes(`@${u.name.split(' ')[0]}`) || 
+        newComment.text.includes(`@${u.name}`)
+      );
+      
+      const notifyUsers = new Set<string>();
+      mentionedUsers.forEach(u => notifyUsers.add(u.id));
+      if (selectedPhoto.userId !== user.uid) {
+        notifyUsers.add(selectedPhoto.userId);
+      }
+      notifyUsers.delete(user.uid);
+
+      if (notifyUsers.size > 0) {
+        const batch = writeBatch(db);
+        notifyUsers.forEach(uid => {
+          const notifRef = doc(collection(db, 'notifications'));
+          batch.set(notifRef, {
+            toUserId: uid,
+            fromUserName: newComment.userName,
+            photoId: selectedPhoto.id,
+            text: newComment.text,
+            type: mentionedUsers.some(u => u.id === uid) ? 'mention' : 'comment',
+            timestamp: new Date().toISOString()
+          });
+        });
+        await batch.commit();
+      }
+
       setCommentText('');
     } catch (err) {
       console.error('Failed to add comment:', err);
@@ -521,16 +606,10 @@ export default function App() {
           <div className="font-sans text-[11px] uppercase tracking-widest flex items-center justify-start md:justify-end gap-4 mb-2 print:hidden">
             {!isAuthLoading && user && (
               <>
-                <div className="flex items-center gap-1 opacity-60" title="Override Auto Location">
-                  <MapPin size={12} />
-                  <input
-                    type="text"
-                    value={locationOverride}
-                    onChange={handleLocationChange}
-                    placeholder="Auto Location"
-                    className="bg-transparent border-b border-[#1A1A1A] outline-none w-20 md:w-28 placeholder:text-[#1A1A1A] placeholder:opacity-50"
-                  />
-                </div>
+                <button onClick={() => setShowSettings(true)} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
+                  <Settings size={12} />
+                  <span className="hidden md:inline">Settings</span>
+                </button>
                 <div className="flex items-center gap-1 opacity-60">
                   <Globe size={12} />
                   <select 
@@ -586,7 +665,14 @@ export default function App() {
             )}
           </div>
           <div className="text-2xl font-light print:text-black">
-            <span className="print:hidden">{currentTime.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', ...(referenceTimezone ? { timeZone: referenceTimezone } : {}) })} </span>
+            <span className="print:hidden">
+              {currentTime.toLocaleTimeString('en-US', { 
+                hour12: activeUsers.find(u => u.id === user?.uid)?.settings?.timeFormat !== '24h', 
+                hour: '2-digit', 
+                minute: '2-digit', 
+                ...(referenceTimezone ? { timeZone: referenceTimezone } : {}) 
+              })} 
+            </span>
             <span className="hidden print:inline">{new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })} Chronicle</span>
             <span className="text-xs uppercase align-top ml-1 font-sans opacity-40 print:hidden">
               {referenceTimezone ? referenceTimezone.split('/').pop()?.replace(/_/g, ' ') : (Intl.DateTimeFormat().resolvedOptions().timeZone.split('/').pop()?.replace(/_/g, ' ') || 'LOCAL')}
@@ -597,7 +683,7 @@ export default function App() {
 
       {/* Main Matrix View */}
       <main className="flex-grow overflow-auto relative print:overflow-visible">
-        <div className="min-w-[600px] md:min-w-0 max-w-7xl mx-auto px-4 md:px-10 pb-24 w-full print:px-0 print:pb-0">
+        <div className="min-w-[600px] md:min-w-0 max-w-4xl mx-auto px-4 md:px-10 pb-24 w-full print:px-0 print:pb-0">
           {/* Column Headers (X-Axis: Names) */}
           <div className="sticky top-0 z-20 bg-[#F9F8F5] pt-6 grid gap-4 mb-4 border-b-[0.5px] border-[#1A1A1A] pb-2 print:relative print:bg-white print:border-black print:pt-4" style={gridStyle}>
             <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end hidden md:block print:bg-white print:text-black">Hour / Slot</div>
@@ -609,7 +695,7 @@ export default function App() {
                   <div className={`w-1.5 h-1.5 md:w-2 md:h-2 rounded-full transition-colors duration-1000 print:hidden ${isSiblingOnline(sibling.id, sibling.name) ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-[#1A1A1A] opacity-20'}`} />
                 </div>
                 <span className="font-sans text-[8px] md:text-[9px] uppercase opacity-40 tracking-tighter truncate block px-1 print:text-black print:opacity-60">
-                  {sibling.timezone.split('/').pop()?.replace(/_/g, ' ')}
+                  {sibling.settings?.displayLocation || sibling.timezone.split('/').pop()?.replace(/_/g, ' ')}
                 </span>
               </div>
             ))}
@@ -659,7 +745,7 @@ export default function App() {
                                 <div className="absolute inset-x-0 bottom-0 p-2 md:p-3 bg-gradient-to-t from-black/60 via-black/30 to-transparent opacity-80 group-hover:opacity-100 transition-opacity duration-500 flex justify-between items-end print:opacity-100 print:bg-none print:bg-white/90">
                                   <div className="flex items-center space-x-1 text-white print:text-black">
                                     <Thermometer size={10} className="md:w-3 md:h-3 print:w-3 print:h-3" strokeWidth={2} />
-                                    <span className="font-sans text-[8px] md:text-[10px]">{photo.metadata.temperature}°C</span>
+                                    <span className="font-sans text-[8px] md:text-[10px]">{renderTemperature(photo.metadata.temperature)}</span>
                                   </div>
                                   <div className="flex items-center space-x-1 text-white print:text-black">
                                     <span className="font-sans text-[8px] md:text-[10px]">{photo.metadata.noiseLevel} dB</span>
@@ -796,12 +882,16 @@ export default function App() {
                 <ChevronLeft size={32} strokeWidth={1} className="text-[#1A1A1A]" />
               </button>
 
-              <div className="relative inline-block mx-8 md:mx-20">
-                <img 
-                  src={selectedPhoto.imageUrl} 
-                  alt="Full screen view" 
-                  className="max-h-[50vh] md:max-h-[60vh] w-auto object-contain border-[0.5px] border-[#1A1A1A] p-3 bg-white shadow-xl" 
-                />
+              <div className="relative inline-block mx-8 md:mx-20 max-w-full">
+                <TransformWrapper>
+                  <TransformComponent>
+                    <img 
+                      src={selectedPhoto.imageUrl} 
+                      alt="Full screen view" 
+                      className="max-h-[50vh] md:max-h-[60vh] w-auto object-contain border-[0.5px] border-[#1A1A1A] p-3 bg-white shadow-xl cursor-zoom-in" 
+                    />
+                  </TransformComponent>
+                </TransformWrapper>
               <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-white px-3 py-2 border-[0.5px] border-[#1A1A1A] shadow-md rounded-full">
                 {['❤️', '🔥', '😂', '😮'].map(emoji => {
                   const count = (selectedPhoto.reactions?.[emoji] || []).length;
@@ -840,19 +930,34 @@ export default function App() {
             
             <div className="flex flex-col items-center gap-3 text-center transition-all duration-500 mt-4">
               <div className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-60">
-                {new Date(selectedPhoto.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
+                {renderTime(selectedPhoto.timestamp)}
               </div>
               {showPhotoInfo && selectedPhoto.metadata && (
                 <div className="flex flex-wrap items-center justify-center gap-4 md:gap-8 mt-6 font-sans text-[10px] uppercase tracking-widest border-t-[0.5px] border-[#1A1A1A] pt-6 w-full max-w-lg animate-in fade-in slide-in-from-top-2">
                   {selectedPhoto.metadata.location && (
                     <div className="flex items-center gap-2">
-                      <MapPin size={14} strokeWidth={1.5} className="opacity-70" />
-                      <span>{selectedPhoto.metadata.location}</span>
+                      {selectedPhoto.metadata.lat && selectedPhoto.metadata.lng ? (
+                        <a 
+                          href={`https://www.google.com/maps?q=${selectedPhoto.metadata.lat},${selectedPhoto.metadata.lng}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-2 hover:text-[#C5A059] transition-colors"
+                          title="Open in Google Maps"
+                        >
+                          <MapPin size={14} strokeWidth={1.5} className="opacity-70" />
+                          <span className="underline decoration-[0.5px] underline-offset-2">{selectedPhoto.metadata.location}</span>
+                        </a>
+                      ) : (
+                        <>
+                          <MapPin size={14} strokeWidth={1.5} className="opacity-70" />
+                          <span>{selectedPhoto.metadata.location}</span>
+                        </>
+                      )}
                     </div>
                   )}
                   <div className="flex items-center gap-2">
                     <Thermometer size={14} strokeWidth={1.5} className="opacity-70" />
-                    <span>{selectedPhoto.metadata.temperature}°C</span>
+                    <span>{renderTemperature(selectedPhoto.metadata.temperature)}</span>
                   </div>
                   {selectedPhoto.metadata.humidity !== undefined && (
                     <div className="flex items-center gap-2">
@@ -876,7 +981,7 @@ export default function App() {
                         <span className="font-serif font-bold italic text-sm">{comment.userName}</span>
                         <div className="flex items-center gap-2">
                           <span className="font-sans text-[8px] uppercase tracking-widest opacity-40">
-                            {new Date(comment.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                            {renderTime(comment.timestamp)}
                           </span>
                           {user && user.uid === comment.userId && (
                             <button
@@ -911,6 +1016,83 @@ export default function App() {
           </div>
         </div>
       )}
+      {/* Settings Modal */}
+      {showSettings && user && (
+        <div className="fixed inset-0 z-[200] bg-black/40 flex items-center justify-center p-4">
+          <div className="bg-[#F9F8F5] p-6 md:p-10 w-full max-w-md shadow-2xl relative animate-in fade-in zoom-in-95 duration-200 border-[0.5px] border-[#1A1A1A]">
+            <button 
+              onClick={() => setShowSettings(false)}
+              className="absolute top-4 right-4 opacity-60 hover:opacity-100 transition-opacity"
+            >
+              <X size={20} />
+            </button>
+            <h2 className="font-serif text-2xl italic mb-8">Settings</h2>
+            
+            <div className="space-y-6">
+              <div className="flex flex-col gap-2">
+                <label className="font-sans text-[10px] uppercase tracking-widest opacity-60">Display Location</label>
+                <input
+                  type="text"
+                  value={locationOverride}
+                  onChange={handleLocationChange}
+                  onBlur={() => handleSaveSettings({ displayLocation: locationOverride })}
+                  placeholder="e.g. San Francisco"
+                  className="bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors placeholder:opacity-30"
+                />
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <label className="font-sans text-[10px] uppercase tracking-widest opacity-60">Temperature Unit</label>
+                <div className="flex gap-4 font-sans text-sm">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input 
+                      type="radio" 
+                      name="tempUnit" 
+                      checked={activeUsers.find(u => u.id === user.uid)?.settings?.temperatureUnit !== 'F'}
+                      onChange={() => handleSaveSettings({ temperatureUnit: 'C' })}
+                    />
+                    Celsius (°C)
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input 
+                      type="radio" 
+                      name="tempUnit" 
+                      checked={activeUsers.find(u => u.id === user.uid)?.settings?.temperatureUnit === 'F'}
+                      onChange={() => handleSaveSettings({ temperatureUnit: 'F' })}
+                    />
+                    Fahrenheit (°F)
+                  </label>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <label className="font-sans text-[10px] uppercase tracking-widest opacity-60">Time Format</label>
+                <div className="flex gap-4 font-sans text-sm">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input 
+                      type="radio" 
+                      name="timeFormat" 
+                      checked={activeUsers.find(u => u.id === user.uid)?.settings?.timeFormat !== '24h'}
+                      onChange={() => handleSaveSettings({ timeFormat: '12h' })}
+                    />
+                    12-hour
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input 
+                      type="radio" 
+                      name="timeFormat" 
+                      checked={activeUsers.find(u => u.id === user.uid)?.settings?.timeFormat === '24h'}
+                      onChange={() => handleSaveSettings({ timeFormat: '24h' })}
+                    />
+                    24-hour
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

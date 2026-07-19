@@ -32,6 +32,8 @@ export async function fetchEnvironmentalMetadata(customLocation?: string): Promi
               temperature: weatherData.current?.temperature_2m || defaultData.temperature,
               humidity: weatherData.current?.relative_humidity_2m || defaultData.humidity,
               location: city,
+              lat: latitude,
+              lng: longitude,
               noiseLevel: defaultData.noiseLevel, // We can't get this easily from browser
             });
           } catch (e) {
@@ -60,8 +62,8 @@ export function compressImage(file: File): Promise<string> {
       img.src = event.target?.result as string;
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 800;
-        const MAX_HEIGHT = 800;
+        const MAX_WIDTH = 2000;
+        const MAX_HEIGHT = 2000;
         let width = img.width;
         let height = img.height;
 
@@ -80,7 +82,7 @@ export function compressImage(file: File): Promise<string> {
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         ctx?.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL('image/jpeg', 0.6));
+        resolve(canvas.toDataURL('image/jpeg', 0.9));
       };
       img.onerror = (error) => reject(error);
     };
@@ -88,7 +90,7 @@ export function compressImage(file: File): Promise<string> {
   });
 }
 
-export function groupPhotosByHour(photos: Photo[], users: User[], timeZone?: string, currentTime: Date = new Date()): TimeSlot[] {
+export function groupPhotosByHour(photos: Photo[], users: User[], timeZone?: string, currentTime: Date = new Date(), hour12: boolean = true): TimeSlot[] {
   const slots = new Map<string, TimeSlot>();
 
   // Pre-fill today's slots from midnight to current hour
@@ -100,7 +102,7 @@ export function groupPhotosByHour(photos: Photo[], users: User[], timeZone?: str
     const hourKey = iterDate.toISOString();
     const displayTime = iterDate.toLocaleTimeString('en-US', { 
       hour: 'numeric', 
-      hour12: true,
+      hour12,
       ...(timeZone ? { timeZone } : {})
     });
     const dateString = iterDate.toLocaleDateString('en-US', { 
@@ -129,7 +131,7 @@ export function groupPhotosByHour(photos: Photo[], users: User[], timeZone?: str
       const displayDate = new Date(hourKey);
       const displayTime = displayDate.toLocaleTimeString('en-US', { 
         hour: 'numeric', 
-        hour12: true,
+        hour12,
         ...(timeZone ? { timeZone } : {})
       });
       const dateString = displayDate.toLocaleDateString('en-US', { 

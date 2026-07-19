@@ -1,14 +1,23 @@
+export interface UserSettings {
+  temperatureUnit: 'C' | 'F';
+  timeFormat: '12h' | '24h';
+  displayLocation?: string;
+}
+
 export interface User {
   id: string;
   name: string;
   timezone: string;
   lastActive?: string;
+  settings?: UserSettings;
 }
 
 export interface PhotoMetadata {
   temperature: number; // in Celsius
   humidity?: number;
   location?: string;
+  lat?: number;
+  lng?: number;
   noiseLevel: number; // in dB
 }
 
