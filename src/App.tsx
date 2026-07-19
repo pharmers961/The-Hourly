@@ -41,6 +41,27 @@ export default function App() {
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
   };
 
+  // Safety net: surface otherwise-silent crashes (e.g. a rejected promise
+  // no local catch handles) as a toast instead of the app just appearing to
+  // do nothing when a button is tapped
+  useEffect(() => {
+    const onError = (e: ErrorEvent) => {
+      console.error('Unhandled error:', e.error || e.message);
+      showToast(`Unexpected error: ${(e.error?.message || e.message || 'unknown').slice(0, 200)}`);
+    };
+    const onRejection = (e: PromiseRejectionEvent) => {
+      console.error('Unhandled rejection:', e.reason);
+      const msg = e.reason instanceof Error ? e.reason.message : String(e.reason);
+      showToast(`Unexpected error: ${msg.slice(0, 200)}`);
+    };
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onRejection);
+    return () => {
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onRejection);
+    };
+  }, []);
+
   // Compatibility shim: the UI below was written against Firebase's auth user
   // ({ uid, displayName }); keep that shape backed by the Supabase profile.
   const user = useMemo(
@@ -458,14 +479,21 @@ export default function App() {
   const handleSendMagicLink = async (e: React.FormEvent) => {
     e.preventDefault();
     const email = loginEmail.trim().toLowerCase();
-    if (!email) return;
+    // Validate ourselves instead of relying on the browser's native
+    // form validation, whose failure tooltip can be silently swallowed by
+    // mobile keyboards/autofill, making the button look like it does nothing
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showToast('Please enter a valid email address.');
+      return;
+    }
     setIsSendingLink(true);
     try {
       await api.sendMagicLink(email);
       setMagicLinkSent(true);
     } catch (error) {
       console.error('Failed to send login link:', error);
-      showToast('Could not send the login link. Check the email address.');
+      const detail = error instanceof Error && error.message ? `: ${error.message.slice(0, 200)}` : '';
+      showToast(`Could not send the login link${detail}`);
     } finally {
       setIsSendingLink(false);
     }
@@ -781,10 +809,9 @@ export default function App() {
               </button>
             </div>
           ) : (
-            <form onSubmit={handleSendMagicLink} className="flex flex-col items-center gap-5">
+            <form onSubmit={handleSendMagicLink} noValidate className="flex flex-col items-center gap-5">
               <input
                 type="email"
-                required
                 value={loginEmail}
                 onChange={(e) => setLoginEmail(e.target.value)}
                 placeholder="you@email.com"
