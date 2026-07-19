@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, Info, MapPin, Droplets, Share } from 'lucide-react';
+import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, Info, MapPin, Droplets, Share, ChevronLeft, ChevronRight } from 'lucide-react';
 import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImage } from './utils';
 import { db, auth } from './firebase';
 import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
@@ -202,6 +202,53 @@ export default function App() {
   }, [users]);
 
   const timeSlots = useMemo(() => groupPhotosByHour(photos, activeUsers, referenceTimezone, currentTime), [photos, activeUsers, referenceTimezone, currentTime]);
+
+  const sortedPhotos = useMemo(() => {
+    return [...photos].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  }, [photos]);
+
+  const handleNextPhoto = () => {
+    if (!selectedPhoto) return;
+    const currentIndex = sortedPhotos.findIndex(p => p.id === selectedPhoto.id);
+    if (currentIndex > 0) {
+      setSelectedPhoto(sortedPhotos[currentIndex - 1]);
+    }
+  };
+
+  const handlePrevPhoto = () => {
+    if (!selectedPhoto) return;
+    const currentIndex = sortedPhotos.findIndex(p => p.id === selectedPhoto.id);
+    if (currentIndex < sortedPhotos.length - 1) {
+      setSelectedPhoto(sortedPhotos[currentIndex + 1]);
+    }
+  };
+
+  const touchStartX = useRef<number | null>(null);
+  const touchEndX = useRef<number | null>(null);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0].clientX;
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    touchEndX.current = e.touches[0].clientX;
+  };
+
+  const handleTouchEnd = () => {
+    if (!touchStartX.current || !touchEndX.current) return;
+    const distance = touchStartX.current - touchEndX.current;
+    
+    if (distance > 50) {
+      // Swiped left (go to next/newer)
+      handlePrevPhoto();
+    } else if (distance < -50) {
+      // Swiped right (go to prev/older)
+      handleNextPhoto();
+    }
+    
+    touchStartX.current = null;
+    touchEndX.current = null;
+  };
 
   const missedSiblings = useMemo(() => {
     // Only check if we are 30 minutes or more into the current hour window
@@ -702,13 +749,43 @@ export default function App() {
             <span className="hidden md:inline">Info</span>
           </button>
 
-          <div className="max-w-4xl w-full flex flex-col items-center gap-8 overflow-y-auto max-h-[90vh] py-10 px-4">
-            <div className="relative inline-block">
-              <img 
-                src={selectedPhoto.imageUrl} 
-                alt="Full screen view" 
-                className="max-h-[50vh] md:max-h-[60vh] w-auto object-contain border-[0.5px] border-[#1A1A1A] p-3 bg-white shadow-xl" 
-              />
+          <div className="max-w-4xl w-full flex flex-col items-center gap-8 overflow-y-auto max-h-[90vh] py-10 px-4 relative">
+            <div className="flex flex-col items-center gap-2 mb-2 text-center">
+              <span className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-60">Chronicle by</span>
+              <span className="font-serif text-3xl md:text-4xl italic">
+                {activeUsers.find(s => s.id === selectedPhoto.userId)?.name || 'Unknown'}
+              </span>
+            </div>
+            
+            <div 
+              className="relative flex items-center justify-center w-full group"
+              onTouchStart={handleTouchStart}
+              onTouchMove={handleTouchMove}
+              onTouchEnd={handleTouchEnd}
+            >
+              <button
+                onClick={handleNextPhoto}
+                disabled={sortedPhotos.findIndex(p => p.id === selectedPhoto.id) === 0}
+                className="absolute left-0 md:left-4 z-10 p-4 opacity-0 group-hover:opacity-100 disabled:opacity-0 transition-opacity disabled:cursor-not-allowed hidden md:block"
+                aria-label="Newer photo"
+              >
+                <ChevronLeft size={48} strokeWidth={1} className="text-[#1A1A1A] drop-shadow-md hover:scale-110 transition-transform" />
+              </button>
+
+              <button
+                onClick={handleNextPhoto}
+                disabled={sortedPhotos.findIndex(p => p.id === selectedPhoto.id) === 0}
+                className="absolute -left-2 z-10 p-2 md:hidden opacity-60 disabled:opacity-0"
+              >
+                <ChevronLeft size={32} strokeWidth={1} className="text-[#1A1A1A]" />
+              </button>
+
+              <div className="relative inline-block mx-8 md:mx-20">
+                <img 
+                  src={selectedPhoto.imageUrl} 
+                  alt="Full screen view" 
+                  className="max-h-[50vh] md:max-h-[60vh] w-auto object-contain border-[0.5px] border-[#1A1A1A] p-3 bg-white shadow-xl" 
+                />
               <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-white px-3 py-2 border-[0.5px] border-[#1A1A1A] shadow-md rounded-full">
                 {['❤️', '🔥', '😂', '😮'].map(emoji => {
                   const count = (selectedPhoto.reactions?.[emoji] || []).length;
@@ -726,10 +803,26 @@ export default function App() {
                 })}
               </div>
             </div>
+
+              <button
+                onClick={handlePrevPhoto}
+                disabled={sortedPhotos.findIndex(p => p.id === selectedPhoto.id) === sortedPhotos.length - 1}
+                className="absolute right-0 md:right-4 z-10 p-4 opacity-0 group-hover:opacity-100 disabled:opacity-0 transition-opacity disabled:cursor-not-allowed hidden md:block"
+                aria-label="Older photo"
+              >
+                <ChevronRight size={48} strokeWidth={1} className="text-[#1A1A1A] drop-shadow-md hover:scale-110 transition-transform" />
+              </button>
+
+              <button
+                onClick={handlePrevPhoto}
+                disabled={sortedPhotos.findIndex(p => p.id === selectedPhoto.id) === sortedPhotos.length - 1}
+                className="absolute -right-2 z-10 p-2 md:hidden opacity-60 disabled:opacity-0"
+              >
+                <ChevronRight size={32} strokeWidth={1} className="text-[#1A1A1A]" />
+              </button>
+            </div>
+            
             <div className="flex flex-col items-center gap-3 text-center transition-all duration-500 mt-4">
-              <div className="font-serif text-3xl italic">
-                {activeUsers.find(s => s.id === selectedPhoto.userId)?.name || 'Unknown'}
-              </div>
               <div className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-60">
                 {new Date(selectedPhoto.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
               </div>
