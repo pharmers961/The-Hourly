@@ -103,8 +103,9 @@ export async function fetchEnvironmentalMetadata(fallbackLocation?: string, coor
     }
 
     return {
-      temperature: weatherData.current?.temperature_2m || defaultData.temperature,
-      humidity: weatherData.current?.relative_humidity_2m || defaultData.humidity,
+      // ?? not ||: 0°C and 0% humidity are valid readings
+      temperature: weatherData.current?.temperature_2m ?? defaultData.temperature,
+      humidity: weatherData.current?.relative_humidity_2m ?? defaultData.humidity,
       location: city || fallbackLocation || 'Unknown Location',
       lat: latitude,
       lng: longitude,

@@ -5,12 +5,22 @@ import html2canvas from 'html2canvas';
 import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImage, getRelativeTime, extractExifGps } from './utils';
 import { db, auth } from './firebase';
 import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, deleteUser, User as FirebaseUser } from 'firebase/auth';
-import { collection, query, onSnapshot, setDoc, doc, doc as firestoreDoc, getDoc, serverTimestamp, writeBatch, where, addDoc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
-import { Photo, User as AppUser } from './types';
+import { collection, query, onSnapshot, setDoc, doc, getDoc, deleteDoc, serverTimestamp, writeBatch, where, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
+import { Photo, User as AppUser, UserSettings } from './types';
+
+// Shape of documents in the Firestore `users` collection
+interface DbUser {
+  id?: string;
+  name?: string;
+  email?: string;
+  timezone?: string;
+  lastActive?: string;
+  settings?: UserSettings;
+}
 
 export default function App() {
   const [photos, setPhotos] = useState<Photo[]>([]);
-  const [users, setUsers] = useState<Record<string, FirebaseUser & { lastActive?: string }>>({});
+  const [users, setUsers] = useState<Record<string, DbUser>>({});
   const [isCapturing, setIsCapturing] = useState(false);
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
@@ -153,9 +163,9 @@ export default function App() {
 
     const usersQuery = query(collection(db, 'users'));
     const unsubscribeUsers = onSnapshot(usersQuery, (snapshot) => {
-      const usersData: Record<string, any> = {};
+      const usersData: Record<string, DbUser> = {};
       snapshot.forEach((doc) => {
-        usersData[doc.id] = doc.data();
+        usersData[doc.id] = doc.data() as DbUser;
       });
       setUsers(usersData);
     }, (error) => {
@@ -165,45 +175,45 @@ export default function App() {
     let isFirstNudgesLoad = true;
     const nudgesQuery = query(collection(db, 'nudges'), where('toUserId', '==', user.uid));
     const unsubscribeNudges = onSnapshot(nudgesQuery, (snapshot) => {
-      if (isFirstNudgesLoad) {
-        isFirstNudgesLoad = false;
-        return;
-      }
-      
       snapshot.docChanges().forEach((change) => {
-        if (change.type === 'added') {
-          const nudge = change.doc.data();
-          if (notificationPermission === 'granted') {
-            new Notification('The Hourly: Nudge!', {
-              body: `${nudge.fromUserName} nudged you to capture your moment!`,
-              icon: '/favicon.svg'
-            });
-          }
+        if (change.type !== 'added') return;
+        const nudge = change.doc.data();
+        if (!isFirstNudgesLoad && notificationPermission === 'granted') {
+          new Notification('The Hourly: Nudge!', {
+            body: `${nudge.fromUserName} nudged you to capture your moment!`,
+            icon: '/favicon.svg'
+          });
         }
+        // Nudges are transient pings: delete after processing so they
+        // don't accumulate forever
+        deleteDoc(change.doc.ref).catch((err) => console.warn('Failed to clean up nudge:', err));
       });
+      isFirstNudgesLoad = false;
+    }, (error) => {
+      console.error('Error fetching nudges:', error);
     });
 
     let isFirstNotificationsLoad = true;
     const notificationsQuery = query(collection(db, 'notifications'), where('toUserId', '==', user.uid));
     const unsubscribeNotifications = onSnapshot(notificationsQuery, (snapshot) => {
-      if (isFirstNotificationsLoad) {
-        isFirstNotificationsLoad = false;
-        return;
-      }
-      
       snapshot.docChanges().forEach((change) => {
-        if (change.type === 'added') {
-          const notif = change.doc.data();
-          if (notificationPermission === 'granted') {
-            new Notification('The Hourly', {
-              body: notif.type === 'mention' 
-                ? `${notif.fromUserName} mentioned you: ${notif.text}`
-                : `${notif.fromUserName} commented on your photo: ${notif.text}`,
-              icon: '/favicon.svg'
-            });
-          }
+        if (change.type !== 'added') return;
+        const notif = change.doc.data();
+        if (!isFirstNotificationsLoad && notificationPermission === 'granted') {
+          new Notification('The Hourly', {
+            body: notif.type === 'mention'
+              ? `${notif.fromUserName} mentioned you: ${notif.text}`
+              : `${notif.fromUserName} commented on your photo: ${notif.text}`,
+            icon: '/favicon.svg'
+          });
         }
+        // Notifications are transient pings: delete after processing so
+        // they don't accumulate forever
+        deleteDoc(change.doc.ref).catch((err) => console.warn('Failed to clean up notification:', err));
       });
+      isFirstNotificationsLoad = false;
+    }, (error) => {
+      console.error('Error fetching notifications:', error);
     });
 
     return () => {
@@ -286,11 +296,11 @@ export default function App() {
 
   const activeUsers: AppUser[] = useMemo(() => {
     return Object.values(users).map(u => ({
-      id: (u as any).id || u.uid || '',
-      name: (u as any).name || 'Unknown',
-      timezone: (u as any).timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+      id: u.id || '',
+      name: u.name || 'Unknown',
+      timezone: u.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
       lastActive: u.lastActive,
-      settings: (u as any).settings
+      settings: u.settings
     }));
   }, [users]);
 
@@ -307,6 +317,22 @@ export default function App() {
   }, [photos, activeUsers, referenceTimezone, selectedDate, user?.uid]);
 
   const isSelectedDateToday = selectedDate.toDateString() === new Date().toDateString();
+
+  // Whether the user has captured a photo in the current real-world hour —
+  // independent of which date is being browsed, since capture always posts
+  // to now.
+  const hasPostedThisHour = useMemo(() => {
+    if (!user) return false;
+    const now = new Date();
+    return photos.some(p => {
+      if (p.userId !== user.uid) return false;
+      const d = new Date(p.timestamp);
+      return d.getFullYear() === now.getFullYear() &&
+             d.getMonth() === now.getMonth() &&
+             d.getDate() === now.getDate() &&
+             d.getHours() === now.getHours();
+    });
+  }, [photos, user, currentTime]);
 
   const displayedSlots = useMemo(() => {
     return timeSlots.filter(slot => {
@@ -367,6 +393,8 @@ export default function App() {
         handlePrevPhoto();
       } else if (e.key === 'Escape') {
         setSelectedPhoto(null);
+        setShowPhotoInfo(false);
+        setIsFullscreenPhoto(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -446,12 +474,13 @@ export default function App() {
     if (dismissedNudgeHour === currentHourKey) return [];
 
     const currentSlot = timeSlots.find(s => s.hourKey === currentHourKey);
-    
+
     return activeUsers.filter(sibling => {
+      if (sibling.id === user?.uid) return false; // don't count (or nudge) yourself
       if (!currentSlot) return true; // No one has uploaded anything this hour yet
       return !currentSlot.photos[sibling.id];
     });
-  }, [currentTime, timeSlots, dismissedNudgeHour, activeUsers]);
+  }, [currentTime, timeSlots, dismissedNudgeHour, activeUsers, user?.uid]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -567,7 +596,7 @@ export default function App() {
     if (!user) return;
     try {
       const userRef = doc(db, 'users', user.uid);
-      const currentUserData = users[user.uid] as any;
+      const currentUserData = users[user.uid];
       const newSettings = { ...(currentUserData?.settings || { temperatureUnit: 'F', timeFormat: '12h' }), ...updates };
       
       // Optimistic update
@@ -591,7 +620,8 @@ export default function App() {
     if (!window.confirm('Are you sure you want to delete your account, all your photos, and your comments and reactions? This cannot be undone.')) return;
 
     try {
-      type Op = { type: 'delete'; ref: ReturnType<typeof doc> } | { type: 'update'; ref: ReturnType<typeof doc>; data: Record<string, unknown> };
+      type ScrubData = Partial<Pick<Photo, 'comments' | 'reactions'>>;
+      type Op = { type: 'delete'; ref: ReturnType<typeof doc> } | { type: 'update'; ref: ReturnType<typeof doc>; data: ScrubData };
       const ops: Op[] = [];
 
       photos.forEach(photo => {
@@ -610,7 +640,7 @@ export default function App() {
           if (rest.length > 0) remainingReactions[emoji] = rest;
         });
         if (hadComments || hadReactions) {
-          const data: Record<string, unknown> = {};
+          const data: ScrubData = {};
           if (hadComments) data.comments = remainingComments;
           if (hadReactions) data.reactions = remainingReactions;
           ops.push({ type: 'update', ref: doc(db, 'photos', photo.id), data });
@@ -1057,7 +1087,7 @@ export default function App() {
       </main>
 
       {/* Floating Action Button */}
-      {user && !timeSlots[0]?.photos?.[user.uid] && (
+      {user && !hasPostedThisHour && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 print:hidden">
           <input 
             type="file" 
