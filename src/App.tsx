@@ -19,6 +19,12 @@ export default function App() {
   const [newPhotoIds, setNewPhotoIds] = useState<Set<string>>(new Set());
   const [dismissedNudgeHour, setDismissedNudgeHour] = useState<string | null>(null);
   const [commentText, setCommentText] = useState('');
+  const [locationOverride, setLocationOverride] = useState(localStorage.getItem('locationOverride') || '');
+
+  const handleLocationChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setLocationOverride(e.target.value);
+    localStorage.setItem('locationOverride', e.target.value);
+  };
   const initialPhotoLoaded = useRef(false);
   const lastNotifiedHour = useRef<number | null>(null);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
@@ -346,7 +352,7 @@ export default function App() {
     setIsCapturing(true);
     try {
       const compressedImageUrl = await compressImage(file);
-      const metadata = await fetchEnvironmentalMetadata();
+      const metadata = await fetchEnvironmentalMetadata(locationOverride || undefined);
       const photoId = `p${Date.now()}`;
       const newPhoto = {
         id: photoId,
@@ -515,6 +521,16 @@ export default function App() {
           <div className="font-sans text-[11px] uppercase tracking-widest flex items-center justify-start md:justify-end gap-4 mb-2 print:hidden">
             {!isAuthLoading && user && (
               <>
+                <div className="flex items-center gap-1 opacity-60" title="Override Auto Location">
+                  <MapPin size={12} />
+                  <input
+                    type="text"
+                    value={locationOverride}
+                    onChange={handleLocationChange}
+                    placeholder="Auto Location"
+                    className="bg-transparent border-b border-[#1A1A1A] outline-none w-20 md:w-28 placeholder:text-[#1A1A1A] placeholder:opacity-50"
+                  />
+                </div>
                 <div className="flex items-center gap-1 opacity-60">
                   <Globe size={12} />
                   <select 

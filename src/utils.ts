@@ -1,13 +1,13 @@
 import { Photo, TimeSlot, User, PhotoMetadata } from './types';
 
 // Helper function to simulate fetching environmental metadata at the moment of capture
-export async function fetchEnvironmentalMetadata(): Promise<PhotoMetadata> {
+export async function fetchEnvironmentalMetadata(customLocation?: string): Promise<PhotoMetadata> {
   return new Promise((resolve) => {
     const defaultData = {
       temperature: Math.floor(Math.random() * (35 - 10) + 10),
       noiseLevel: Math.floor(Math.random() * (90 - 30) + 30),
       humidity: 50,
-      location: 'Unknown Location',
+      location: customLocation || 'Unknown Location',
     };
 
     if ('geolocation' in navigator) {
@@ -20,11 +20,13 @@ export async function fetchEnvironmentalMetadata(): Promise<PhotoMetadata> {
             const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m`);
             const weatherData = await weatherRes.json();
             
-            // Fetch location name from openstreetmap nominatim
-            const geoRes = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`);
-            const geoData = await geoRes.json();
-            
-            const city = geoData.address.city || geoData.address.town || geoData.address.village || geoData.address.county || 'Unknown Location';
+            let city = customLocation;
+            if (!city) {
+              // Fetch location name from openstreetmap nominatim
+              const geoRes = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`);
+              const geoData = await geoRes.json();
+              city = geoData.address.city || geoData.address.town || geoData.address.village || geoData.address.county || 'Unknown Location';
+            }
             
             resolve({
               temperature: weatherData.current?.temperature_2m || defaultData.temperature,
