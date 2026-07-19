@@ -122,7 +122,8 @@ begin
   values (
     auth.uid(),
     v_email,
-    coalesce(nullif(p_name, ''), initcap(split_part(v_email, '@', 1))),
+    -- "akram.aboukhalil@..." -> "Akram Aboukhalil"
+    coalesce(nullif(p_name, ''), initcap(btrim(translate(split_part(v_email, '@', 1), '._-', '   ')))),
     coalesce(nullif(p_timezone, ''), 'UTC'),
     now()
   )
@@ -153,7 +154,8 @@ create policy "profiles insert" on public.profiles
 
 drop policy if exists "profiles update own" on public.profiles;
 create policy "profiles update own" on public.profiles
-  for update to authenticated using (auth_id = auth.uid());
+  for update to authenticated
+  using (auth_id = auth.uid() or auth_id is null); -- unclaimed placeholders may be corrected by the Firebase import
 
 drop policy if exists "profiles delete own" on public.profiles;
 create policy "profiles delete own" on public.profiles
@@ -237,17 +239,32 @@ create policy "notifications delete own" on public.notifications
 -- Storage: photo files
 -- ---------------------------------------------------------------------------
 
-insert into storage.buckets (id, name, public)
-values ('photos', 'photos', true)
-on conflict (id) do nothing;
+-- Some Supabase projects don't allow the SQL editor to touch storage
+-- objects/policies (ownership restriction). Wrap in exception handlers so a
+-- storage failure never blocks the rest of this script; the fallback is
+-- creating the bucket and policies in the dashboard's Storage section.
 
-drop policy if exists "photo uploads" on storage.objects;
-create policy "photo uploads" on storage.objects
-  for insert to authenticated with check (bucket_id = 'photos');
+do $$
+begin
+  insert into storage.buckets (id, name, public)
+  values ('photos', 'photos', true)
+  on conflict (id) do nothing;
+exception when others then
+  raise notice 'Could not create the storage bucket via SQL (%). Create a PUBLIC bucket named "photos" in the dashboard: Storage -> New bucket.', sqlerrm;
+end $$;
 
-drop policy if exists "photo delete own" on storage.objects;
-create policy "photo delete own" on storage.objects
-  for delete to authenticated using (bucket_id = 'photos' and owner = auth.uid());
+do $$
+begin
+  drop policy if exists "photo uploads" on storage.objects;
+  create policy "photo uploads" on storage.objects
+    for insert to authenticated with check (bucket_id = 'photos');
+
+  drop policy if exists "photo delete own" on storage.objects;
+  create policy "photo delete own" on storage.objects
+    for delete to authenticated using (bucket_id = 'photos' and owner = auth.uid());
+exception when others then
+  raise notice 'Could not create storage policies via SQL (%). In the dashboard: Storage -> photos bucket -> Policies -> New policy -> allow INSERT for authenticated users.', sqlerrm;
+end $$;
 
 -- ---------------------------------------------------------------------------
 -- Realtime

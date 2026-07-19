@@ -271,14 +271,21 @@ export async function migrateFromFirebase(onProgress: (message: string) => void)
 
     const { data: existing } = await supabase
       .from('profiles')
-      .select('id, firebase_uid')
+      .select('id, firebase_uid, name')
       .or(`firebase_uid.eq.${userDoc.id},email.eq.${email}`)
       .limit(1);
 
     if (existing && existing.length > 0) {
       uidToProfileId[userDoc.id] = existing[0].id;
-      if (!existing[0].firebase_uid) {
-        await supabase.from('profiles').update({ firebase_uid: userDoc.id }).eq('id', existing[0].id);
+      // Adopt the real Firebase name/timezone: profiles created by a
+      // magic-link sign-in before the import only have a name guessed
+      // from the email address
+      const updates: { firebase_uid?: string; name?: string; timezone?: string } = {};
+      if (!existing[0].firebase_uid) updates.firebase_uid = userDoc.id;
+      if (u.name) updates.name = u.name;
+      if (u.timezone) updates.timezone = u.timezone;
+      if (Object.keys(updates).length > 0) {
+        await supabase.from('profiles').update(updates).eq('id', existing[0].id);
       }
     } else {
       const { data: created, error } = await supabase
@@ -332,7 +339,9 @@ export async function migrateFromFirebase(onProgress: (message: string) => void)
       contentType: 'image/jpeg',
       upsert: true,
     });
-    if (uploadError) throw uploadError;
+    if (uploadError) {
+      throw new Error(`storage upload failed: ${uploadError.message}`);
+    }
 
     const { data: photoRow, error: insertError } = await supabase
       .from('photos')
@@ -345,7 +354,9 @@ export async function migrateFromFirebase(onProgress: (message: string) => void)
       })
       .select('id')
       .single();
-    if (insertError) throw insertError;
+    if (insertError) {
+      throw new Error(`photo insert failed: ${insertError.message}`);
+    }
 
     for (const c of p.comments || []) {
       const commentProfile = uidToProfileId[c.userId];

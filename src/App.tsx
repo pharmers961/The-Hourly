@@ -28,6 +28,7 @@ export default function App() {
   const [commentText, setCommentText] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [localLocationInput, setLocalLocationInput] = useState('');
+  const [localNameInput, setLocalNameInput] = useState('');
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [isGeneratingCollage, setIsGeneratingCollage] = useState(false);
   const [isFullscreenPhoto, setIsFullscreenPhoto] = useState(false);
@@ -259,8 +260,9 @@ export default function App() {
     if (showSettings && user) {
       const displayLocation = activeUsers.find(u => u.id === user.uid)?.settings?.displayLocation || '';
       setLocalLocationInput(displayLocation);
+      setLocalNameInput(profile?.name || '');
     }
-  }, [showSettings, user, activeUsers]);
+  }, [showSettings, user, activeUsers, profile?.name]);
 
   const timeSlots = useMemo(() => {
     const isHour12 = activeUsers.find(u => u.id === user?.uid)?.settings?.timeFormat !== '24h';
@@ -571,14 +573,32 @@ export default function App() {
     setMigrateStatus('Starting...');
     try {
       const summary = await api.migrateFromFirebase(setMigrateStatus);
+      // The import may have corrected this user's own name/timezone
+      const refreshedProfile = await api.ensureProfile(Intl.DateTimeFormat().resolvedOptions().timeZone).catch(() => null);
+      if (refreshedProfile) setProfile(refreshedProfile);
       await refreshData();
       showToast(summary, 'success');
     } catch (err) {
       console.error('Firebase import failed:', err);
-      showToast('Import failed. Please try again.');
+      const detail = err instanceof Error && err.message ? `: ${err.message.slice(0, 140)}` : '. Please try again.';
+      showToast(`Import failed${detail}`);
     } finally {
       setIsMigrating(false);
       setMigrateStatus('');
+    }
+  };
+
+  const handleSaveName = async () => {
+    if (!profile) return;
+    const name = localNameInput.trim();
+    if (!name || name === profile.name) return;
+    try {
+      await api.saveProfileName(profile.id, name);
+      setProfile(prev => (prev ? { ...prev, name } : prev));
+      setUsers(prev => ({ ...prev, [profile.id]: { ...prev[profile.id], name } }));
+    } catch (err) {
+      console.error('Failed to save name:', err);
+      showToast('Failed to save your name. Please try again.');
     }
   };
 
@@ -1291,9 +1311,10 @@ export default function App() {
       {showSettings && user && (
         <div className="fixed inset-0 z-[200] bg-black/40 flex items-center justify-center p-4">
           <div className="bg-[#F9F8F5] p-6 md:p-10 w-full max-w-md max-h-[90vh] overflow-y-auto shadow-2xl relative animate-in fade-in zoom-in-95 duration-200 border-[0.5px] border-[#1A1A1A]">
-            <button 
+            <button
               onClick={() => {
                 handleSaveSettings({ displayLocation: localLocationInput });
+                handleSaveName();
                 setShowSettings(false);
               }}
               className="absolute top-4 right-4 opacity-60 hover:opacity-100 transition-opacity"
@@ -1301,8 +1322,20 @@ export default function App() {
               <X size={20} />
             </button>
             <h2 className="font-serif text-2xl italic mb-8">Settings</h2>
-            
+
             <div className="space-y-6">
+              <div className="flex flex-col gap-2">
+                <label className="font-sans text-[10px] uppercase tracking-widest opacity-60">Display Name</label>
+                <input
+                  type="text"
+                  value={localNameInput}
+                  onChange={(e) => setLocalNameInput(e.target.value)}
+                  onBlur={handleSaveName}
+                  placeholder="First Last"
+                  className="bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors placeholder:opacity-30"
+                />
+              </div>
+
               <div className="flex flex-col gap-2">
                 <label className="font-sans text-[10px] uppercase tracking-widest opacity-60">Display Location</label>
                 <input
