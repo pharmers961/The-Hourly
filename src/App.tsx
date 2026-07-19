@@ -14,7 +14,6 @@ export default function App() {
   const [profile, setProfile] = useState<(AppUser & { email: string }) | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [loginEmail, setLoginEmail] = useState('');
-  const [loginName, setLoginName] = useState('');
   const [magicLinkSent, setMagicLinkSent] = useState(false);
   const [isSendingLink, setIsSendingLink] = useState(false);
   const [isMigrating, setIsMigrating] = useState(false);
@@ -72,14 +71,8 @@ export default function App() {
       setTimeout(() => {
         if (session) {
           const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-          // Name typed on the login screen, stashed until the magic link
-          // completes the sign-in
-          const pendingName = localStorage.getItem('pendingDisplayName') || undefined;
-          api.ensureProfile(tz, pendingName)
-            .then(p => {
-              setProfile(p);
-              localStorage.removeItem('pendingDisplayName');
-            })
+          api.ensureProfile(tz)
+            .then(p => setProfile(p))
             .catch(err => {
               console.error('Failed to load profile:', err);
               showToast('Failed to load your profile. Please try again.');
@@ -468,10 +461,6 @@ export default function App() {
     if (!email) return;
     setIsSendingLink(true);
     try {
-      const name = loginName.trim();
-      if (name) {
-        localStorage.setItem('pendingDisplayName', name);
-      }
       await api.sendMagicLink(email);
       setMagicLinkSent(true);
     } catch (error) {
@@ -784,14 +773,6 @@ export default function App() {
             </div>
           ) : (
             <form onSubmit={handleSendMagicLink} className="flex flex-col items-center gap-5">
-              <input
-                type="text"
-                value={loginName}
-                onChange={(e) => setLoginName(e.target.value)}
-                placeholder="First Last"
-                autoComplete="name"
-                className="bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors text-center w-64 placeholder:opacity-30"
-              />
               <input
                 type="email"
                 required
