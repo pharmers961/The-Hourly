@@ -145,6 +145,10 @@ export async function fetchEnvironmentalMetadata(fallbackLocation?: string, coor
   });
 }
 
+export function compressImageToBlob(file: File): Promise<Blob> {
+  return compressImage(file).then(dataUrl => fetch(dataUrl).then(r => r.blob()));
+}
+
 export function compressImage(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

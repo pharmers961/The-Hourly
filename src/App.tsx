@@ -1,29 +1,23 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, Info, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon, Maximize, Clock } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import html2canvas from 'html2canvas';
-import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImage, getRelativeTime, extractExifGps } from './utils';
-import { db, auth } from './firebase';
-import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, deleteUser, User as FirebaseUser } from 'firebase/auth';
-import { collection, query, onSnapshot, setDoc, doc, getDoc, deleteDoc, serverTimestamp, writeBatch, where, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
+import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImageToBlob, getRelativeTime, extractExifGps } from './utils';
+import { supabase, isSupabaseConfigured } from './supabase';
+import * as api from './api';
 import { Photo, User as AppUser, UserSettings } from './types';
-
-// Shape of documents in the Firestore `users` collection
-interface DbUser {
-  id?: string;
-  name?: string;
-  email?: string;
-  timezone?: string;
-  lastActive?: string;
-  settings?: UserSettings;
-}
 
 export default function App() {
   const [photos, setPhotos] = useState<Photo[]>([]);
-  const [users, setUsers] = useState<Record<string, DbUser>>({});
+  const [users, setUsers] = useState<Record<string, AppUser>>({});
   const [isCapturing, setIsCapturing] = useState(false);
-  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [profile, setProfile] = useState<(AppUser & { email: string }) | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [loginEmail, setLoginEmail] = useState('');
+  const [magicLinkSent, setMagicLinkSent] = useState(false);
+  const [isSendingLink, setIsSendingLink] = useState(false);
+  const [isMigrating, setIsMigrating] = useState(false);
+  const [migrateStatus, setMigrateStatus] = useState('');
   const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
   const [showPhotoInfo, setShowPhotoInfo] = useState(false);
   const [isNudging, setIsNudging] = useState(false);
@@ -46,9 +40,18 @@ export default function App() {
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
   };
 
+  // Compatibility shim: the UI below was written against Firebase's auth user
+  // ({ uid, displayName }); keep that shape backed by the Supabase profile.
+  const user = useMemo(
+    () => (profile ? { uid: profile.id, displayName: profile.name } : null),
+    [profile]
+  );
+
   const initialPhotoLoaded = useRef(false);
   const photoEntryPushed = useRef(false);
   const lastNotifiedHour = useRef<number | null>(null);
+  const knownPhotoIds = useRef<Set<string> | null>(null);
+  const usersRef = useRef<Record<string, AppUser>>({});
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
     'Notification' in window ? Notification.permission : 'default'
   );
@@ -61,168 +64,124 @@ export default function App() {
   };
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      if (currentUser) {
-        // Register or update user in Firestore
-        const userRef = doc(db, 'users', currentUser.uid);
-        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-        await setDoc(userRef, {
-          id: currentUser.uid,
-          name: currentUser.displayName || 'Unknown',
-          email: currentUser.email,
-          timezone: tz,
-          lastActive: new Date().toISOString()
-        }, { merge: true });
-        
-        setUser(currentUser);
-      } else {
-        setUser(null);
-      }
-      setIsAuthLoading(false);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      // Supabase calls must be deferred out of the auth callback to avoid
+      // deadlocking the auth client
+      setTimeout(() => {
+        if (session) {
+          const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          api.ensureProfile(tz)
+            .then(p => setProfile(p))
+            .catch(err => {
+              console.error('Failed to load profile:', err);
+              showToast('Failed to load your profile. Please try again.');
+            })
+            .finally(() => setIsAuthLoading(false));
+        } else {
+          setProfile(null);
+          setIsAuthLoading(false);
+        }
+      }, 0);
     });
-    return () => unsubscribe();
+    return () => subscription.unsubscribe();
   }, []);
 
   // Heartbeat: lastActive is otherwise only written at login, so without this
   // the 10-minute online check runs on stale data. Refresh it periodically
   // while the app is open (and whenever the tab regains focus).
   useEffect(() => {
-    if (!user) return;
-    const updateLastActive = () => {
-      setDoc(doc(db, 'users', user.uid), { lastActive: new Date().toISOString() }, { merge: true })
-        .catch((err) => console.warn('Failed to update lastActive:', err));
+    if (!profile) return;
+    const heartbeat = () => {
+      api.updateLastActive(profile.id).catch((err) => console.warn('Failed to update lastActive:', err));
     };
-    const interval = setInterval(updateLastActive, 5 * 60 * 1000);
+    const interval = setInterval(heartbeat, 5 * 60 * 1000);
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') updateLastActive();
+      if (document.visibilityState === 'visible') heartbeat();
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
       clearInterval(interval);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [user]);
+  }, [profile?.id]);
 
-  useEffect(() => {
-    if (!user) {
-      setPhotos([]);
-      setUsers({});
-      return;
-    }
+  const refreshData = useCallback(async () => {
+    try {
+      const data = await api.fetchAllData();
+      usersRef.current = data.profiles;
+      setUsers(data.profiles);
+      setPhotos(data.photos);
 
-    let isFirstPhotosLoad = true;
-    const photosQuery = query(collection(db, 'photos'));
-    const unsubscribePhotos = onSnapshot(photosQuery, (snapshot) => {
-      const photosData: Photo[] = [];
-      const incomingNewIds = new Set<string>();
-      
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === 'added' && !isFirstPhotosLoad) {
-          incomingNewIds.add(change.doc.id);
+      if (knownPhotoIds.current) {
+        // Pulse photos that arrived since the last refresh
+        const freshIds = data.photos.filter(p => !knownPhotoIds.current!.has(p.id)).map(p => p.id);
+        if (freshIds.length > 0) {
+          setNewPhotoIds(prev => {
+            const next = new Set(prev);
+            freshIds.forEach(id => next.add(id));
+            return next;
+          });
+          setTimeout(() => {
+            setNewPhotoIds(prev => {
+              const next = new Set(prev);
+              freshIds.forEach(id => next.delete(id));
+              return next;
+            });
+          }, 5000); // Pulse for 5 seconds
         }
-      });
-      
-      snapshot.forEach((doc) => {
-        photosData.push({ id: doc.id, ...doc.data() } as Photo);
-      });
-      
-      setPhotos(photosData);
-      
-      if (!initialPhotoLoaded.current) {
-        const params = new URLSearchParams(window.location.search);
-        const pId = params.get('photo');
+      } else {
+        // First load: honor a shared ?photo= deep link
+        const pId = new URLSearchParams(window.location.search).get('photo');
         if (pId) {
-          const p = photosData.find(x => x.id === pId);
-          if (p) {
-            setSelectedPhoto(p);
-          }
+          const p = data.photos.find(x => x.id === pId);
+          if (p) setSelectedPhoto(p);
         }
         initialPhotoLoaded.current = true;
       }
-      
-      if (incomingNewIds.size > 0) {
-        setNewPhotoIds(prev => {
-          const next = new Set(prev);
-          incomingNewIds.forEach(id => next.add(id));
-          return next;
-        });
-        setTimeout(() => {
-          setNewPhotoIds(prev => {
-            const next = new Set(prev);
-            incomingNewIds.forEach(id => next.delete(id));
-            return next;
-          });
-        }, 5000); // Pulse for 5 seconds
-      }
-      
-      isFirstPhotosLoad = false;
-    }, (error) => {
-      console.error('Error fetching photos:', error);
-    });
+      knownPhotoIds.current = new Set(data.photos.map(p => p.id));
+    } catch (err) {
+      console.error('Failed to load data:', err);
+    }
+  }, []);
 
-    const usersQuery = query(collection(db, 'users'));
-    const unsubscribeUsers = onSnapshot(usersQuery, (snapshot) => {
-      const usersData: Record<string, DbUser> = {};
-      snapshot.forEach((doc) => {
-        usersData[doc.id] = doc.data() as DbUser;
-      });
-      setUsers(usersData);
-    }, (error) => {
-      console.error('Error fetching users:', error);
-    });
+  useEffect(() => {
+    if (!profile) {
+      setPhotos([]);
+      setUsers({});
+      usersRef.current = {};
+      knownPhotoIds.current = null;
+      return;
+    }
 
-    let isFirstNudgesLoad = true;
-    const nudgesQuery = query(collection(db, 'nudges'), where('toUserId', '==', user.uid));
-    const unsubscribeNudges = onSnapshot(nudgesQuery, (snapshot) => {
-      snapshot.docChanges().forEach((change) => {
-        if (change.type !== 'added') return;
-        const nudge = change.doc.data();
-        if (!isFirstNudgesLoad && notificationPermission === 'granted') {
+    refreshData();
+
+    const unsubscribe = api.subscribeRealtime(profile.id, {
+      onDataChange: () => {
+        refreshData();
+      },
+      onNudge: (fromProfileId) => {
+        if (notificationPermission === 'granted') {
+          const fromName = usersRef.current[fromProfileId]?.name.split(' ')[0] || 'Someone';
           new Notification('The Hourly: Nudge!', {
-            body: `${nudge.fromUserName} nudged you to capture your moment!`,
+            body: `${fromName} nudged you to capture your moment!`,
             icon: '/favicon.svg'
           });
         }
-        // Nudges are transient pings: delete after processing so they
-        // don't accumulate forever
-        deleteDoc(change.doc.ref).catch((err) => console.warn('Failed to clean up nudge:', err));
-      });
-      isFirstNudgesLoad = false;
-    }, (error) => {
-      console.error('Error fetching nudges:', error);
-    });
-
-    let isFirstNotificationsLoad = true;
-    const notificationsQuery = query(collection(db, 'notifications'), where('toUserId', '==', user.uid));
-    const unsubscribeNotifications = onSnapshot(notificationsQuery, (snapshot) => {
-      snapshot.docChanges().forEach((change) => {
-        if (change.type !== 'added') return;
-        const notif = change.doc.data();
-        if (!isFirstNotificationsLoad && notificationPermission === 'granted') {
+      },
+      onNotification: (n) => {
+        if (notificationPermission === 'granted') {
           new Notification('The Hourly', {
-            body: notif.type === 'mention'
-              ? `${notif.fromUserName} mentioned you: ${notif.text}`
-              : `${notif.fromUserName} commented on your photo: ${notif.text}`,
+            body: n.type === 'mention'
+              ? `${n.from_name} mentioned you: ${n.text || ''}`
+              : `${n.from_name} commented on your photo: ${n.text || ''}`,
             icon: '/favicon.svg'
           });
         }
-        // Notifications are transient pings: delete after processing so
-        // they don't accumulate forever
-        deleteDoc(change.doc.ref).catch((err) => console.warn('Failed to clean up notification:', err));
-      });
-      isFirstNotificationsLoad = false;
-    }, (error) => {
-      console.error('Error fetching notifications:', error);
+      },
     });
 
-    return () => {
-      unsubscribePhotos();
-      unsubscribeUsers();
-      unsubscribeNudges();
-      unsubscribeNotifications();
-    };
-  }, [user, notificationPermission]);
+    return unsubscribe;
+  }, [profile?.id, notificationPermission, refreshData]);
 
   useEffect(() => {
     if (!initialPhotoLoaded.current) return;
@@ -294,15 +253,7 @@ export default function App() {
 
   const [currentTime, setCurrentTime] = useState(new Date());
 
-  const activeUsers: AppUser[] = useMemo(() => {
-    return Object.values(users).map(u => ({
-      id: u.id || '',
-      name: u.name || 'Unknown',
-      timezone: u.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
-      lastActive: u.lastActive,
-      settings: u.settings
-    }));
-  }, [users]);
+  const activeUsers: AppUser[] = useMemo(() => Object.values(users), [users]);
 
   useEffect(() => {
     if (showSettings && user) {
@@ -502,42 +453,35 @@ export default function App() {
     return () => clearInterval(timer);
   }, [notificationPermission]);
 
-  const handleLogin = async () => {
+  const handleSendMagicLink = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const email = loginEmail.trim().toLowerCase();
+    if (!email) return;
+    setIsSendingLink(true);
     try {
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
+      await api.sendMagicLink(email);
+      setMagicLinkSent(true);
     } catch (error) {
-      console.error('Login failed:', error);
-      showToast('Sign in failed. Please try again.');
+      console.error('Failed to send login link:', error);
+      showToast('Could not send the login link. Check the email address.');
+    } finally {
+      setIsSendingLink(false);
     }
   };
 
   const handleLogout = () => {
     if (window.confirm('Are you sure you want to log out?')) {
-      signOut(auth);
+      supabase.auth.signOut();
     }
   };
 
   const handleNudge = async () => {
     if (!user || missedSiblings.length === 0) return;
     setIsNudging(true);
-    
+
     try {
-      const batch = writeBatch(db);
       const currentHourKey = new Date(currentTime.getFullYear(), currentTime.getMonth(), currentTime.getDate(), currentTime.getHours()).toISOString();
-      
-      missedSiblings.forEach(sibling => {
-        const nudgeRef = doc(collection(db, 'nudges'));
-        batch.set(nudgeRef, {
-          fromUserId: user.uid,
-          fromUserName: user.displayName?.split(' ')[0] || 'Someone',
-          toUserId: sibling.id,
-          hourKey: currentHourKey,
-          timestamp: serverTimestamp()
-        });
-      });
-      
-      await batch.commit();
+      await api.sendNudges(user.uid, missedSiblings.map(s => s.id), currentHourKey);
       showToast('Nudge sent', 'success');
     } catch (err) {
       console.error('Failed to send nudges:', err);
@@ -564,22 +508,15 @@ export default function App() {
     
     setIsCapturing(true);
     try {
-      const compressedImageUrl = await compressImage(file);
+      const imageBlob = await compressImageToBlob(file);
       const userDisplayLocation = activeUsers.find(u => u.id === user.uid)?.settings?.displayLocation;
       // Prefer the GPS coordinates embedded in the photo itself; fall back to
       // the device's current position inside fetchEnvironmentalMetadata.
       const exifCoords = await extractExifGps(file);
       const metadata = await fetchEnvironmentalMetadata(userDisplayLocation || undefined, exifCoords || undefined);
-      const photoId = `p${Date.now()}`;
-      const newPhoto = {
-        id: photoId,
-        userId: user.uid,
-        timestamp: new Date().toISOString(),
-        imageUrl: compressedImageUrl,
-        metadata
-      };
-      
-      await setDoc(doc(db, 'photos', photoId), newPhoto);
+
+      await api.uploadPhoto(user.uid, imageBlob, metadata);
+      await refreshData();
       showToast('Moment captured', 'success');
     } catch (err) {
       console.error('Capture error:', err);
@@ -595,10 +532,9 @@ export default function App() {
   const handleSaveSettings = async (updates: Partial<AppUser['settings']>) => {
     if (!user) return;
     try {
-      const userRef = doc(db, 'users', user.uid);
-      const currentUserData = users[user.uid];
-      const newSettings = { ...(currentUserData?.settings || { temperatureUnit: 'F', timeFormat: '12h' }), ...updates };
-      
+      const defaults: UserSettings = { temperatureUnit: 'F', timeFormat: '12h' };
+      const newSettings: UserSettings = { ...(users[user.uid]?.settings || defaults), ...updates };
+
       // Optimistic update
       setUsers(prev => ({
         ...prev,
@@ -608,7 +544,7 @@ export default function App() {
         }
       }));
 
-      await setDoc(userRef, { settings: newSettings }, { merge: true });
+      await api.saveProfileSettings(user.uid, newSettings);
     } catch (err) {
       console.error('Failed to save settings:', err);
       showToast('Failed to save settings. Please try again.');
@@ -620,60 +556,8 @@ export default function App() {
     if (!window.confirm('Are you sure you want to delete your account, all your photos, and your comments and reactions? This cannot be undone.')) return;
 
     try {
-      type ScrubData = Partial<Pick<Photo, 'comments' | 'reactions'>>;
-      type Op = { type: 'delete'; ref: ReturnType<typeof doc> } | { type: 'update'; ref: ReturnType<typeof doc>; data: ScrubData };
-      const ops: Op[] = [];
-
-      photos.forEach(photo => {
-        if (photo.userId === user.uid) {
-          ops.push({ type: 'delete', ref: doc(db, 'photos', photo.id) });
-          return;
-        }
-        // Scrub this user's comments and reactions from other people's photos
-        const remainingComments = (photo.comments || []).filter(c => c.userId !== user.uid);
-        const hadComments = remainingComments.length !== (photo.comments || []).length;
-        const remainingReactions: Record<string, string[]> = {};
-        let hadReactions = false;
-        Object.entries<string[]>(photo.reactions || {}).forEach(([emoji, uids]) => {
-          const rest = uids.filter(id => id !== user.uid);
-          if (rest.length < uids.length) hadReactions = true;
-          if (rest.length > 0) remainingReactions[emoji] = rest;
-        });
-        if (hadComments || hadReactions) {
-          const data: ScrubData = {};
-          if (hadComments) data.comments = remainingComments;
-          if (hadReactions) data.reactions = remainingReactions;
-          ops.push({ type: 'update', ref: doc(db, 'photos', photo.id), data });
-        }
-      });
-
-      // Firestore batches cap at 500 operations
-      for (let i = 0; i < ops.length; i += 400) {
-        const batch = writeBatch(db);
-        ops.slice(i, i + 400).forEach(op => {
-          if (op.type === 'delete') batch.delete(op.ref);
-          else batch.update(op.ref, op.data);
-        });
-        await batch.commit();
-      }
-
-      // Delete the profile last: photo updates above require the user doc to
-      // still exist for the security rules' registered-user check.
-      const profileBatch = writeBatch(db);
-      profileBatch.delete(doc(db, 'users', user.uid));
-      await profileBatch.commit();
-
-      try {
-        // Also remove the Firebase Auth account so the login itself is gone
-        await deleteUser(user);
-      } catch (authErr: any) {
-        if (authErr?.code === 'auth/requires-recent-login') {
-          showToast('Data deleted. Sign in again and repeat to remove your login.');
-          await signOut(auth);
-        } else {
-          throw authErr;
-        }
-      }
+      // Deleting the profile cascades to photos, comments, and reactions
+      await api.deleteAccount(user.uid, photos.filter(p => p.userId === user.uid));
       setShowSettings(false);
     } catch (err) {
       console.error('Failed to delete account:', err);
@@ -681,26 +565,30 @@ export default function App() {
     }
   };
 
+  const handleMigrateFromFirebase = async () => {
+    if (isMigrating) return;
+    setIsMigrating(true);
+    setMigrateStatus('Starting...');
+    try {
+      const summary = await api.migrateFromFirebase(setMigrateStatus);
+      await refreshData();
+      showToast(summary, 'success');
+    } catch (err) {
+      console.error('Firebase import failed:', err);
+      showToast('Import failed. Please try again.');
+    } finally {
+      setIsMigrating(false);
+      setMigrateStatus('');
+    }
+  };
+
   const handleReaction = async (photoId: string, emoji: string = '❤️') => {
     if (!user) return;
     try {
-      const photoRef = doc(db, 'photos', photoId);
-      const photoDoc = await getDoc(photoRef);
-      if (!photoDoc.exists()) return;
-
-      const currentReactions = photoDoc.data().reactions || {};
-      const emojiUsers = currentReactions[emoji] || [];
-      
-      let newEmojiUsers;
-      if (emojiUsers.includes(user.uid)) {
-        newEmojiUsers = emojiUsers.filter((id: string) => id !== user.uid);
-      } else {
-        newEmojiUsers = [...emojiUsers, user.uid];
-      }
-
-      await updateDoc(photoRef, {
-        [`reactions.${emoji}`]: newEmojiUsers
-      });
+      const photo = photos.find(p => p.id === photoId);
+      const hasReacted = (photo?.reactions?.[emoji] || []).includes(user.uid);
+      await api.setReaction(photoId, user.uid, emoji, !hasReacted);
+      await refreshData();
     } catch (err) {
       console.error('Failed to react:', err);
       showToast('Failed to add reaction. Please try again.');
@@ -764,23 +652,14 @@ export default function App() {
     if (!selectedPhoto || !user || !commentText.trim()) return;
 
     try {
-      const newComment = {
-        id: Date.now().toString(),
-        userId: user.uid,
-        userName: user.displayName?.split(' ')[0] || 'Unknown',
-        text: commentText.trim(),
-        timestamp: new Date().toISOString()
-      };
+      const text = commentText.trim();
+      await api.addComment(selectedPhoto.id, user.uid, text);
 
-      await updateDoc(doc(db, 'photos', selectedPhoto.id), {
-        comments: arrayUnion(newComment)
-      });
-      
-      const mentionedUsers = activeUsers.filter(u => 
-        newComment.text.includes(`@${u.name.split(' ')[0]}`) || 
-        newComment.text.includes(`@${u.name}`)
+      const mentionedUsers = activeUsers.filter(u =>
+        text.includes(`@${u.name.split(' ')[0]}`) ||
+        text.includes(`@${u.name}`)
       );
-      
+
       const notifyUsers = new Set<string>();
       mentionedUsers.forEach(u => notifyUsers.add(u.id));
       if (selectedPhoto.userId !== user.uid) {
@@ -788,23 +667,17 @@ export default function App() {
       }
       notifyUsers.delete(user.uid);
 
-      if (notifyUsers.size > 0) {
-        const batch = writeBatch(db);
-        notifyUsers.forEach(uid => {
-          const notifRef = doc(collection(db, 'notifications'));
-          batch.set(notifRef, {
-            toUserId: uid,
-            fromUserName: newComment.userName,
-            photoId: selectedPhoto.id,
-            text: newComment.text,
-            type: mentionedUsers.some(u => u.id === uid) ? 'mention' : 'comment',
-            timestamp: new Date().toISOString()
-          });
-        });
-        await batch.commit();
-      }
+      const fromName = user.displayName?.split(' ')[0] || 'Someone';
+      await api.sendNotifications([...notifyUsers].map(toProfileId => ({
+        toProfileId,
+        fromName,
+        photoId: selectedPhoto.id,
+        text,
+        type: mentionedUsers.some(u => u.id === toProfileId) ? 'mention' as const : 'comment' as const,
+      })));
 
       setCommentText('');
+      await refreshData();
     } catch (err) {
       console.error('Failed to add comment:', err);
       showToast('Failed to post comment. Please try again.');
@@ -814,12 +687,8 @@ export default function App() {
   const handleDeleteComment = async (commentId: string) => {
     if (!selectedPhoto || !user) return;
     try {
-      const commentToRemove = selectedPhoto.comments?.find(c => c.id === commentId);
-      if (!commentToRemove) return;
-      
-      await updateDoc(doc(db, 'photos', selectedPhoto.id), {
-        comments: arrayRemove(commentToRemove)
-      });
+      await api.deleteComment(commentId);
+      await refreshData();
     } catch (err) {
       console.error('Failed to delete comment:', err);
       showToast('Failed to delete comment. Please try again.');
@@ -829,27 +698,9 @@ export default function App() {
   const handleToggleReaction = async (emoji: string) => {
     if (!selectedPhoto || !user) return;
     try {
-      const currentReactions = selectedPhoto.reactions || {};
-      const emojiUsers = currentReactions[emoji] || [];
-      const hasReacted = emojiUsers.includes(user.uid);
-      
-      if (hasReacted) {
-        const newEmojiUsers = emojiUsers.filter(id => id !== user.uid);
-        const newReactions = { ...currentReactions };
-        if (newEmojiUsers.length === 0) {
-          delete newReactions[emoji];
-        } else {
-          newReactions[emoji] = newEmojiUsers;
-        }
-        await updateDoc(doc(db, 'photos', selectedPhoto.id), {
-          reactions: newReactions
-        });
-      } else {
-        const newReactions = { ...currentReactions, [emoji]: [...emojiUsers, user.uid] };
-        await updateDoc(doc(db, 'photos', selectedPhoto.id), {
-          reactions: newReactions
-        });
-      }
+      const hasReacted = (selectedPhoto.reactions?.[emoji] || []).includes(user.uid);
+      await api.setReaction(selectedPhoto.id, user.uid, emoji, !hasReacted);
+      await refreshData();
     } catch (err) {
       console.error('Failed to toggle reaction:', err);
       showToast('Failed to update reaction. Please try again.');
@@ -867,6 +718,18 @@ export default function App() {
     { label: 'Los Angeles (PST)', value: 'America/Los_Angeles' },
   ];
 
+  if (!isSupabaseConfigured) {
+    return (
+      <div className="h-screen bg-[#F9F8F5] text-[#1A1A1A] font-serif flex flex-col items-center justify-center p-4">
+        <div className="max-w-md text-center space-y-4">
+          <h1 className="text-4xl tracking-tight leading-none italic">The Hourly</h1>
+          <p className="font-sans text-xs uppercase tracking-[0.2em] opacity-60">Setup required</p>
+          <p className="font-sans text-sm opacity-80">Add your Supabase project URL and anon key to supabase-config.json, then rebuild.</p>
+        </div>
+      </div>
+    );
+  }
+
   if (!isAuthLoading && !user) {
     return (
       <div className="h-screen bg-[#F9F8F5] text-[#1A1A1A] font-serif flex flex-col items-center justify-center p-4 selection:bg-[#1A1A1A] selection:text-[#F9F8F5]">
@@ -875,10 +738,39 @@ export default function App() {
             <h1 className="text-4xl md:text-6xl tracking-tight leading-none mb-4 italic">The Hourly</h1>
             <p className="font-sans text-xs md:text-sm uppercase tracking-[0.2em] opacity-60">A Synchronized Visual Journal</p>
           </div>
-          <button onClick={handleLogin} className="mx-auto flex items-center gap-2 border-[0.5px] border-[#1A1A1A] px-6 py-3 hover:bg-[#1A1A1A] hover:text-[#F9F8F5] transition-colors font-sans text-[10px] uppercase tracking-widest cursor-pointer">
-            <LogIn size={14} />
-            Sign In to Chronicle
-          </button>
+          {magicLinkSent ? (
+            <div className="space-y-3">
+              <p className="font-serif text-xl italic">Check your email</p>
+              <p className="font-sans text-[11px] uppercase tracking-[0.2em] opacity-60 leading-relaxed">
+                We sent a login link to {loginEmail.trim()}.<br />Tap it on this device to sign in.
+              </p>
+              <button
+                onClick={() => setMagicLinkSent(false)}
+                className="font-sans text-[10px] uppercase tracking-widest underline underline-offset-4 opacity-60 hover:opacity-100 transition-opacity"
+              >
+                Use a different email
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={handleSendMagicLink} className="flex flex-col items-center gap-5">
+              <input
+                type="email"
+                required
+                value={loginEmail}
+                onChange={(e) => setLoginEmail(e.target.value)}
+                placeholder="you@email.com"
+                className="bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors text-center w-64 placeholder:opacity-30"
+              />
+              <button
+                type="submit"
+                disabled={isSendingLink}
+                className="mx-auto flex items-center gap-2 border-[0.5px] border-[#1A1A1A] px-6 py-3 hover:bg-[#1A1A1A] hover:text-[#F9F8F5] transition-colors font-sans text-[10px] uppercase tracking-widest cursor-pointer disabled:opacity-50"
+              >
+                <LogIn size={14} />
+                {isSendingLink ? 'Sending...' : 'Email Me a Login Link'}
+              </button>
+            </form>
+          )}
         </div>
       </div>
     );
@@ -920,14 +812,6 @@ export default function App() {
           <p className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-60 print:text-[12px] print:opacity-80">A Synchronized Visual Journal</p>
         </div>
         <div className="text-left md:text-right">
-          <div className="font-sans text-[11px] uppercase tracking-widest flex items-center justify-start md:justify-end gap-4 mb-2 print:hidden">
-            {!isAuthLoading && !user && (
-              <button onClick={handleLogin} className="flex items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
-                <LogIn size={12} />
-                <span>Login</span>
-              </button>
-            )}
-          </div>
           <div className="text-2xl font-light print:text-black flex items-center md:justify-end gap-3">
             <div className="flex items-center gap-2 print:hidden">
               <button onClick={handlePrevDay} className="opacity-40 hover:opacity-100 transition-opacity"><ChevronLeft size={16} /></button>
@@ -1528,6 +1412,10 @@ export default function App() {
                   <button onClick={handleExportCollage} disabled={isGeneratingCollage} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity disabled:opacity-30 w-fit">
                     <ImageIcon size={14} />
                     <span>{isGeneratingCollage ? 'Exporting...' : 'Export Collage Image'}</span>
+                  </button>
+                  <button onClick={handleMigrateFromFirebase} disabled={isMigrating} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity disabled:opacity-30 w-fit">
+                    <Download size={14} className={isMigrating ? 'animate-pulse' : ''} />
+                    <span>{isMigrating ? (migrateStatus || 'Importing...') : 'Import Photos from Firebase'}</span>
                   </button>
                 </div>
 

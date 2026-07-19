@@ -34,6 +34,7 @@ export interface Photo {
   userId: string;
   timestamp: string; // ISO string
   imageUrl: string;
+  imagePath?: string; // storage object path (Supabase)
   metadata?: PhotoMetadata;
   comments?: Comment[];
   reactions?: Record<string, string[]>; // map of emoji to userIds
