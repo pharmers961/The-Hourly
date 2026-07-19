@@ -428,7 +428,7 @@ export default function App() {
     }
   };
 
-  const gridStyle = { gridTemplateColumns: `100px repeat(${activeUsers.length > 0 ? activeUsers.length : 1}, 1fr)` };
+  const gridStyle = { gridTemplateColumns: `72px repeat(${activeUsers.length > 0 ? activeUsers.length : 1}, 1fr)` };
 
   const STANDARD_TIMEZONES = [
     { label: 'New York (EST)', value: 'America/New_York' },
@@ -578,7 +578,7 @@ export default function App() {
                   {activeUsers.map(sibling => {
                     const photo = slot.photos[sibling.id];
                     return (
-                      <div key={sibling.id} className="w-full aspect-square max-h-[200px] md:max-h-[300px]">
+                      <div key={sibling.id} className="w-full aspect-square">
                         {photo ? (
                           <div 
                             className={`h-full bg-white border-[0.5px] border-[#1A1A1A] border-opacity-20 p-1 flex flex-col hover:border-opacity-60 transition-all duration-1000 cursor-pointer print:border-black print:border-opacity-30 ${
