@@ -20,7 +20,6 @@ interface CommentRow {
   profile_id: string;
   text: string;
   created_at: string;
-  profiles: { name: string } | null; // embedded so it resolves even if the commenter isn't in the currently viewed group
 }
 
 interface ReactionRow {
@@ -36,7 +35,6 @@ interface PhotoRow {
   image_path: string;
   metadata: PhotoMetadata | null;
   firebase_id: string | null;
-  author: ProfileRow | null; // embedded so departed members' names still resolve in history
   comments: CommentRow[];
   reactions: ReactionRow[];
 }
@@ -76,7 +74,7 @@ function mapProfileRow(row: ProfileRow): AppUser {
   };
 }
 
-function mapPhotoRow(ph: PhotoRow): Photo {
+function mapPhotoRow(ph: PhotoRow, profiles: Record<string, AppUser>): Photo {
   const reactions: Record<string, string[]> = {};
   ph.reactions.forEach(r => {
     (reactions[r.emoji] ||= []).push(r.profile_id);
@@ -93,7 +91,7 @@ function mapPhotoRow(ph: PhotoRow): Photo {
       .map(c => ({
         id: c.id,
         userId: c.profile_id,
-        userName: c.profiles?.name.split(' ')[0] || 'Unknown',
+        userName: profiles[c.profile_id]?.name.split(' ')[0] || 'Unknown',
         text: c.text,
         timestamp: c.created_at,
       })),
@@ -247,10 +245,10 @@ interface PhotoGroupRow {
 export async function fetchGroupData(groupId: string): Promise<AppData> {
   const [membersRes, photoLinksRes] = await Promise.all([
     supabase.from('group_members').select('profiles(*)').eq('group_id', groupId),
-    supabase.from('photo_groups').select('photos(*, author:profiles(*), comments(*, profiles(name)), reactions(*))').eq('group_id', groupId),
+    supabase.from('photo_groups').select('photos(*, comments(*), reactions(*))').eq('group_id', groupId),
   ]);
-  if (membersRes.error) throw membersRes.error;
-  if (photoLinksRes.error) throw photoLinksRes.error;
+  if (membersRes.error) throw describeError('fetch members failed', membersRes.error);
+  if (photoLinksRes.error) throw describeError('fetch photos failed', photoLinksRes.error);
 
   const profiles: Record<string, AppUser> = {};
   const memberIds: string[] = [];
@@ -261,16 +259,27 @@ export async function fetchGroupData(groupId: string): Promise<AppData> {
     }
   });
 
-  const photos: Photo[] = (photoLinksRes.data as unknown as PhotoGroupRow[])
+  const photoRows = (photoLinksRes.data as unknown as PhotoGroupRow[])
     .filter(row => row.photos)
-    .map(row => {
-      // A photo's author may have left the group — keep their profile around
-      // so their name still shows when browsing history
-      if (row.photos!.author && !profiles[row.photos!.author.id]) {
-        profiles[row.photos!.author.id] = mapProfileRow(row.photos!.author);
-      }
-      return mapPhotoRow(row.photos!);
-    })
+    .map(row => row.photos!);
+
+  // Photo/comment authors who have since left the group won't be in the
+  // members lookup above — fetch those separately so their names still
+  // resolve when browsing history
+  const neededIds = new Set<string>();
+  photoRows.forEach(p => {
+    neededIds.add(p.profile_id);
+    p.comments.forEach(c => neededIds.add(c.profile_id));
+  });
+  const missingIds = [...neededIds].filter(id => !profiles[id]);
+  if (missingIds.length > 0) {
+    const { data: extra, error } = await supabase.from('profiles').select('*').in('id', missingIds);
+    if (error) throw describeError('fetch departed members failed', error);
+    (extra as ProfileRow[] || []).forEach(p => { profiles[p.id] = mapProfileRow(p); });
+  }
+
+  const photos: Photo[] = photoRows
+    .map(row => mapPhotoRow(row, profiles))
     .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
   return { profiles, photos, memberIds };

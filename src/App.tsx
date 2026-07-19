@@ -201,7 +201,8 @@ export default function App() {
       knownPhotoIds.current = new Set(data.photos.map(p => p.id));
     } catch (err) {
       console.error('Failed to load data:', err);
-      showToast('Failed to load photos. Please try again.');
+      const detail = err instanceof Error && err.message ? `: ${err.message.slice(0, 300)}` : '';
+      showToast(`Failed to load photos${detail}`);
     }
   }, [selectedGroupId]);
 
