@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon, Maximize, Clock, RefreshCw } from 'lucide-react';
+import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon, Maximize, Clock, RefreshCw, Newspaper } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import html2canvas from 'html2canvas';
 import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImageToBlob, makeThumbnailBlob, getRelativeTime, extractExifGps } from './utils';
@@ -35,6 +35,11 @@ export default function App() {
   const [isFullscreenPhoto, setIsFullscreenPhoto] = useState(false);
   const [toasts, setToasts] = useState<{ id: number; message: string; type: 'error' | 'success' }[]>([]);
   const collageRef = useRef<HTMLDivElement>(null);
+
+  // Weekly recap ("The Weekly")
+  const [showRecap, setShowRecap] = useState(false);
+  const [isSavingRecap, setIsSavingRecap] = useState(false);
+  const recapRef = useRef<HTMLDivElement>(null);
 
   // Groups
   const [groups, setGroups] = useState<Group[]>([]);
@@ -472,6 +477,84 @@ export default function App() {
     () => memberIds.map(id => users[id]).filter(Boolean),
     [memberIds, users]
   );
+
+  // Everything "The Weekly" needs, computed from the selected group's last
+  // 7 days (rolling window ending today).
+  const recapData = useMemo(() => {
+    if (!showRecap) return null;
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
+    const weekPhotos = photos.filter(p => new Date(p.timestamp) >= start);
+
+    const heartCount = (p: Photo) =>
+      Object.values(p.reactions || {}).reduce((n, arr) => n + arr.length, 0);
+
+    const days: { label: string; dayPhotos: Photo[] }[] = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+      days.push({
+        label: d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }),
+        dayPhotos: weekPhotos
+          .filter(p => new Date(p.timestamp).toDateString() === d.toDateString())
+          .sort((a, b) => a.timestamp.localeCompare(b.timestamp)),
+      });
+    }
+
+    const hero =
+      [...weekPhotos].sort(
+        (a, b) => heartCount(b) - heartCount(a) || b.timestamp.localeCompare(a.timestamp)
+      )[0] || null;
+
+    const perPerson = activeUsers
+      .map(u => {
+        const mine = weekPhotos.filter(p => p.userId === u.id);
+        return {
+          user: u,
+          count: mine.length,
+          hearts: mine.reduce((n, p) => n + heartCount(p), 0),
+          daysPosted: new Set(mine.map(p => new Date(p.timestamp).toDateString())).size,
+        };
+      })
+      .sort((a, b) => b.count - a.count);
+
+    const hourCounts: Record<number, number> = {};
+    weekPhotos.forEach(p => {
+      const h = new Date(p.timestamp).getHours();
+      hourCounts[h] = (hourCounts[h] || 0) + 1;
+    });
+    const busiest = Object.entries(hourCounts).sort((a, b) => b[1] - a[1])[0];
+    const busiestHourLabel = busiest
+      ? new Date(2000, 0, 1, Number(busiest[0])).toLocaleTimeString('en-US', { hour: 'numeric', hour12: true })
+      : null;
+
+    const totalHearts = weekPhotos.reduce((n, p) => n + heartCount(p), 0);
+    const totalComments = weekPhotos.reduce((n, p) => n + (p.comments?.length || 0), 0);
+    const rangeLabel = `${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+
+    return { weekPhotos, days, hero, perPerson, busiestHourLabel, totalHearts, totalComments, rangeLabel, heartCount };
+  }, [showRecap, photos, activeUsers]);
+
+  const handleSaveRecap = async () => {
+    if (!recapRef.current) return;
+    setIsSavingRecap(true);
+    try {
+      const canvas = await html2canvas(recapRef.current, {
+        scale: 2,
+        backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--color-paper').trim() || '#F9F8F5',
+        logging: false,
+        useCORS: true
+      });
+      const link = document.createElement('a');
+      link.download = `The-Hourly-Weekly-${new Date().toLocaleDateString().replace(/\//g, '-')}.jpg`;
+      link.href = canvas.toDataURL('image/jpeg', 0.9);
+      link.click();
+    } catch (err) {
+      console.error('Recap export failed', err);
+      showToast(`Failed to save recap${errDetail(err)}`);
+    } finally {
+      setIsSavingRecap(false);
+    }
+  };
 
   const selectedGroup = useMemo(() => groups.find(g => g.id === selectedGroupId) || null, [groups, selectedGroupId]);
   // Every member is an admin (rename, invite, remove members). Deleting the
@@ -1513,6 +1596,19 @@ export default function App() {
         </div>
       )}
 
+      {/* Weekly Recap Button */}
+      {groups.length > 0 && (
+        <div className="fixed bottom-[4.75rem] right-6 z-50 print:hidden">
+          <button
+            onClick={() => setShowRecap(true)}
+            className="bg-card/80 backdrop-blur-sm border-[0.5px] border-ink text-ink p-3 rounded-full hover:bg-card transition-all shadow-lg hover:scale-110 active:scale-95"
+            title="This week's recap"
+          >
+            <Newspaper size={20} strokeWidth={1.5} />
+          </button>
+        </div>
+      )}
+
       {/* Jump to Now Button */}
       <div className="fixed bottom-6 right-6 z-50 print:hidden">
         <button
@@ -1894,6 +1990,151 @@ export default function App() {
                 className="flex-1 bg-ink text-paper py-2 font-sans text-[10px] uppercase tracking-widest hover:opacity-90 transition-colors disabled:opacity-40"
               >
                 Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Weekly Recap — "The Weekly" */}
+      {showRecap && recapData && (
+        <div className="fixed inset-0 z-[150] bg-paper overflow-y-auto print:hidden animate-in fade-in duration-300">
+          <button
+            onClick={() => setShowRecap(false)}
+            className="fixed top-5 right-5 z-[160] p-2 bg-paper/80 backdrop-blur-sm rounded-full opacity-70 hover:opacity-100 transition-opacity border-[0.5px] border-ink/20"
+            aria-label="Close recap"
+          >
+            <X size={18} />
+          </button>
+
+          <div className="max-w-2xl mx-auto px-5 py-12">
+            <div ref={recapRef} className="bg-paper px-1 py-2">
+              {/* Masthead */}
+              <div className="text-center mb-8">
+                <p className="font-sans text-[9px] uppercase tracking-[0.35em] opacity-50 mb-2">The Hourly Presents</p>
+                <h1 className="font-serif italic text-5xl leading-none mb-3">The Weekly</h1>
+                <p className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-60">
+                  {selectedGroup?.name} · {recapData.rangeLabel}
+                </p>
+                <div className="mt-5 border-t-2 border-ink" />
+                <div className="mt-[3px] border-t-[0.5px] border-ink" />
+              </div>
+
+              {recapData.weekPhotos.length === 0 ? (
+                <div className="text-center py-16">
+                  <p className="font-serif italic text-2xl mb-2">A quiet week</p>
+                  <p className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-50">No moments were chronicled these seven days</p>
+                </div>
+              ) : (
+                <>
+                  {/* Stats band */}
+                  <div className="grid grid-cols-3 text-center mb-10">
+                    <div>
+                      <p className="font-serif text-3xl">{recapData.weekPhotos.length}</p>
+                      <p className="font-sans text-[9px] uppercase tracking-[0.2em] opacity-50 mt-1">Moments</p>
+                    </div>
+                    <div className="border-x-[0.5px] border-ink/20">
+                      <p className="font-serif text-3xl">{recapData.totalHearts}</p>
+                      <p className="font-sans text-[9px] uppercase tracking-[0.2em] opacity-50 mt-1">Reactions</p>
+                    </div>
+                    <div>
+                      <p className="font-serif text-3xl">{recapData.busiestHourLabel || '—'}</p>
+                      <p className="font-sans text-[9px] uppercase tracking-[0.2em] opacity-50 mt-1">Golden Hour</p>
+                    </div>
+                  </div>
+
+                  {/* Moment of the Week */}
+                  {recapData.hero && (
+                    <div className="mb-12 text-center">
+                      <p className="font-sans text-[10px] uppercase tracking-[0.3em] text-gold mb-4">Moment of the Week</p>
+                      <div className="bg-card border-[0.5px] border-ink/30 p-2 shadow-xl inline-block max-w-full">
+                        <img
+                          src={recapData.hero.imageUrl}
+                          alt="Moment of the week"
+                          crossOrigin="anonymous"
+                          className="max-h-[420px] w-auto max-w-full object-contain"
+                        />
+                      </div>
+                      <p className="font-serif italic text-lg mt-4">
+                        {users[recapData.hero.userId]?.name.split(' ')[0] || 'Someone'}
+                        {recapData.heartCount(recapData.hero) > 0 && (
+                          <span className="font-sans not-italic text-xs opacity-60 ml-2">
+                            {recapData.heartCount(recapData.hero)} ❤️
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Day by day */}
+                  <div className="space-y-6 mb-12">
+                    {recapData.days.map(day => (
+                      <div key={day.label}>
+                        <div className="flex items-baseline justify-between border-b-[0.5px] border-ink/20 pb-1 mb-3">
+                          <span className="font-serif italic text-base">{day.label}</span>
+                          <span className="font-sans text-[9px] uppercase tracking-[0.2em] opacity-40">
+                            {day.dayPhotos.length > 0 ? `${day.dayPhotos.length} moment${day.dayPhotos.length === 1 ? '' : 's'}` : 'quiet day'}
+                          </span>
+                        </div>
+                        {day.dayPhotos.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                            {day.dayPhotos.map(p => (
+                              <div key={p.id} className="w-14 h-14 md:w-16 md:h-16 bg-card border-[0.5px] border-ink/20 p-0.5">
+                                <img
+                                  src={p.thumbUrl || p.imageUrl}
+                                  alt=""
+                                  crossOrigin="anonymous"
+                                  className="w-full h-full object-cover"
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Contributors */}
+                  <div className="mb-10">
+                    <p className="font-sans text-[10px] uppercase tracking-[0.3em] opacity-50 text-center mb-4">The Contributors</p>
+                    <div className="space-y-2">
+                      {recapData.perPerson.map(({ user: u, count, hearts, daysPosted }) => (
+                        <div key={u.id} className="flex items-baseline justify-between border-b-[0.5px] border-ink/10 pb-2">
+                          <span className="font-serif italic text-base">{u.name}</span>
+                          <span className="font-sans text-[10px] uppercase tracking-widest opacity-60">
+                            {count} moment{count === 1 ? '' : 's'} · {hearts} ❤️ · {daysPosted}/7 days
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Colophon */}
+              <div className="text-center pt-2">
+                <div className="border-t-[0.5px] border-ink mb-[3px]" />
+                <div className="border-t-2 border-ink mb-5" />
+                <p className="font-serif italic text-sm opacity-70">
+                  Chronicled hour by hour, together.
+                </p>
+                <p className="font-sans text-[9px] uppercase tracking-[0.3em] opacity-40 mt-2">The Hourly</p>
+              </div>
+            </div>
+
+            <div className="flex justify-center gap-3 mt-8 pb-6">
+              <button
+                onClick={handleSaveRecap}
+                disabled={isSavingRecap}
+                className="bg-ink text-paper px-6 py-3 font-sans text-[10px] uppercase tracking-widest hover:opacity-90 transition-opacity disabled:opacity-50"
+              >
+                {isSavingRecap ? 'Saving...' : 'Save as Image'}
+              </button>
+              <button
+                onClick={() => setShowRecap(false)}
+                className="border-[0.5px] border-ink px-6 py-3 font-sans text-[10px] uppercase tracking-widest opacity-70 hover:opacity-100 transition-opacity"
+              >
+                Close
               </button>
             </div>
           </div>
