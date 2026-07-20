@@ -1258,7 +1258,11 @@ export default function App() {
             </button>
           </div>
         ) : (
-        <div ref={collageRef} className="min-w-[600px] md:min-w-0 max-w-4xl mx-auto px-4 md:px-10 pb-24 w-full print:px-0 print:pb-0">
+        <div
+          ref={collageRef}
+          style={{ minWidth: Math.max(380, columnUsers.length * 172 + 90) }}
+          className="max-w-4xl mx-auto px-4 md:px-10 pb-24 w-full print:px-0 print:pb-0"
+        >
           {/* Column Headers (X-Axis: Names) */}
           <div className="sticky top-0 z-20 bg-[#F9F8F5] pt-6 grid gap-4 mb-4 border-b-[0.5px] border-[#1A1A1A] pb-2 print:relative print:bg-white print:border-black print:pt-4" style={gridStyle}>
             <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end hidden md:block print:bg-white print:text-black">Hour / Slot</div>
