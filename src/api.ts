@@ -126,21 +126,27 @@ const SIGNED_URL_TTL_SECONDS = 60 * 60 * 4;
 // Batch-sign every storage path a group's photos need, so a private bucket can
 // serve them without exposing permanent public URLs. Storage row-level security
 // (the "photo read visible" policy) means a signature is only ever issued for a
-// photo the caller is already allowed to see. Any path that fails to sign falls
-// back to the public URL — harmless while the bucket is still public, and a
-// broken image at worst once it's private (which shouldn't happen for photos we
-// just fetched as visible).
+// photo the caller is already allowed to see.
+//
+// A transient failure of the sign request would otherwise fall back to a public
+// URL — which is a DEAD link on a private bucket (a broken image until the user
+// reloads). So we retry any still-unsigned paths a couple of times before
+// giving up, which lets an intermittent hiccup self-heal instead of showing a
+// broken photo.
 async function buildUrlResolver(paths: string[]): Promise<(path: string) => string> {
   const unique = [...new Set(paths.filter(Boolean))];
   const signed: Record<string, string> = {};
-  if (unique.length > 0) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const missing = unique.filter(p => !signed[p]);
+    if (missing.length === 0) break;
     try {
-      const { data } = await supabase.storage.from('photos').createSignedUrls(unique, SIGNED_URL_TTL_SECONDS);
+      const { data, error } = await supabase.storage.from('photos').createSignedUrls(missing, SIGNED_URL_TTL_SECONDS);
+      if (error) continue; // retry the whole missing set
       (data || []).forEach(entry => {
-        if (entry.path && entry.signedUrl) signed[entry.path] = entry.signedUrl;
+        if (entry.path && entry.signedUrl && !entry.error) signed[entry.path] = entry.signedUrl;
       });
     } catch {
-      // fall through to public URLs for every path
+      // retry, then fall back below
     }
   }
   return (path: string) => signed[path] || publicPhotoUrl(path);
@@ -537,7 +543,10 @@ export interface AdminPhoto {
 export async function fetchAdminPhotos(limit = 500): Promise<AdminPhoto[]> {
   const { data, error } = await supabase
     .from('photos')
-    .select('id, taken_at, image_path, thumb_path, uploader:profiles(name), photo_groups(groups(name)), photo_reports(id, reason, status, created_at, reporter:profiles(name))')
+    // profiles is reachable from photos by several paths (profile_id, plus
+    // reactions/photo_views), so the uploader embed must name the exact FK or
+    // PostgREST errors with "more than one relationship" (PGRST201).
+    .select('id, taken_at, image_path, thumb_path, uploader:profiles!photos_profile_id_fkey(name), photo_groups(groups(name)), photo_reports(id, reason, status, created_at, reporter:profiles!photo_reports_reporter_profile_id_fkey(name))')
     .order('taken_at', { ascending: false })
     .limit(limit);
   if (error) throw describeError('admin photo fetch failed', error);
