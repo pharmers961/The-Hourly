@@ -1546,6 +1546,19 @@ export default function App() {
     );
   }
 
+  // Local-time yyyy-mm-dd for the <input type="date"> (toISOString would
+  // shift the day for anyone west of UTC)
+  const toDateInputValue = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+  const handleDatePicked = (value: string) => {
+    if (!value) return;
+    const [y, m, d] = value.split('-').map(Number);
+    const picked = new Date(y, m - 1, d);
+    if (picked > new Date()) return; // no future dates
+    setSelectedDate(picked);
+  };
+
   const handlePrevDay = () => {
     setSelectedDate(prev => {
       const d = new Date(prev);
@@ -1608,8 +1621,23 @@ export default function App() {
           <div className="text-2xl font-light print:text-black flex items-center md:justify-end gap-3">
             <div className="flex items-center gap-2 print:hidden">
               <button onClick={handlePrevDay} className="opacity-40 hover:opacity-100 transition-opacity"><ChevronLeft size={16} /></button>
-              <span className="text-lg">
+              {/* The label doubles as a calendar: a transparent native date
+                  input sits on top of it, so tapping opens the picker */}
+              <span className="relative text-lg cursor-pointer border-b border-dotted border-ink/40 leading-tight">
                 {isSelectedDateToday ? 'Today' : selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                <input
+                  type="date"
+                  value={toDateInputValue(selectedDate)}
+                  max={toDateInputValue(new Date())}
+                  onChange={(e) => handleDatePicked(e.target.value)}
+                  onClick={(e) => {
+                    // Phones open the native picker on tap by themselves;
+                    // desktop browsers need the explicit ask
+                    try { e.currentTarget.showPicker?.(); } catch { /* focus alone is fine */ }
+                  }}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  aria-label="Pick a date"
+                />
               </span>
               <button onClick={handleNextDay} disabled={isSelectedDateToday} className={`transition-opacity ${isSelectedDateToday ? 'opacity-10 cursor-not-allowed' : 'opacity-40 hover:opacity-100'}`}><ChevronRight size={16} /></button>
             </div>

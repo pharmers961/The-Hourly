@@ -301,6 +301,9 @@ export function groupPhotosByHour(photos: Photo[], users: User[], timeZone?: str
 
   photos.forEach(photo => {
     const date = new Date(photo.timestamp);
+    // Only the day being viewed: without this, browsing any date would pull
+    // the group's entire history into the matrix
+    if (date.toDateString() !== selectedDate.toDateString()) return;
     // Floor to the nearest hour to align into the same slot (e.g. 8:07am -> 8:00am)
     const hourKey = new Date(date.getFullYear(), date.getMonth(), date.getDate(), date.getHours()).toISOString();
 
