@@ -148,27 +148,59 @@ begin
   -- Claim a placeholder created by the Firebase import
   select * into v_profile from profiles where lower(email) = v_email and auth_id is null;
   if found then
-    update profiles
-      set auth_id = auth.uid(),
-          last_active = now(),
-          timezone = coalesce(nullif(p_timezone, ''), timezone),
-          name = coalesce(nullif(p_name, ''), name)
-      where id = v_profile.id
+    begin
+      update profiles
+        set auth_id = auth.uid(),
+            last_active = now(),
+            timezone = coalesce(nullif(p_timezone, ''), timezone),
+            name = coalesce(nullif(p_name, ''), name)
+        where id = v_profile.id
+        returning * into v_profile;
+      return v_profile;
+    exception when unique_violation then
+      -- a concurrent call linked this auth user first; recover below
+      null;
+    end;
+  end if;
+
+  begin
+    insert into profiles (auth_id, email, name, timezone, last_active)
+    values (
+      auth.uid(),
+      v_email,
+      -- "akram.aboukhalil@..." -> "Akram Aboukhalil"
+      coalesce(nullif(p_name, ''), initcap(btrim(translate(split_part(v_email, '@', 1), '._-', '   ')))),
+      coalesce(nullif(p_timezone, ''), 'UTC'),
+      now()
+    )
+    returning * into v_profile;
+    return v_profile;
+  exception when unique_violation then
+    -- Signing in fires several auth events at once, so two ensure_profile
+    -- calls can race: both see "no profile", both insert, and the loser
+    -- lands here. The row exists now — recover instead of failing.
+    null;
+  end;
+
+  select * into v_profile from profiles where auth_id = auth.uid();
+  if found then
+    update profiles set last_active = now() where id = v_profile.id
       returning * into v_profile;
     return v_profile;
   end if;
 
-  insert into profiles (auth_id, email, name, timezone, last_active)
-  values (
-    auth.uid(),
-    v_email,
-    -- "akram.aboukhalil@..." -> "Akram Aboukhalil"
-    coalesce(nullif(p_name, ''), initcap(btrim(translate(split_part(v_email, '@', 1), '._-', '   ')))),
-    coalesce(nullif(p_timezone, ''), 'UTC'),
-    now()
-  )
-  returning * into v_profile;
-  return v_profile;
+  -- Not a race: this email's profile is linked to a different auth account
+  -- (signed in with a different provider than last time). Re-link by the
+  -- verified email — same trust model create_photo already uses.
+  update profiles
+    set auth_id = auth.uid(), last_active = now()
+    where lower(email) = v_email
+    returning * into v_profile;
+  if found then
+    return v_profile;
+  end if;
+
+  raise exception 'Could not create or claim a profile for %', v_email;
 end;
 $$;
 

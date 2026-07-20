@@ -186,21 +186,34 @@ export default function App() {
     }
   };
 
+  // Sign-in fires several auth events back-to-back (SIGNED_IN,
+  // INITIAL_SESSION, TOKEN_REFRESHED); only the first one per auth user
+  // should call ensure_profile — concurrent calls race each other into a
+  // "duplicate key" failure on first-ever sign-in.
+  const ensuredAuthUserId = useRef<string | null>(null);
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       // Supabase calls must be deferred out of the auth callback to avoid
       // deadlocking the auth client
       setTimeout(() => {
         if (session) {
+          if (ensuredAuthUserId.current === session.user.id) {
+            setIsAuthLoading(false);
+            return;
+          }
+          ensuredAuthUserId.current = session.user.id;
           const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
           api.ensureProfile(tz)
             .then(p => setProfile(p))
             .catch(err => {
+              // Allow the next auth event to retry
+              ensuredAuthUserId.current = null;
               console.error('Failed to load profile:', err);
               showToast(`Failed to load your profile${errDetail(err)}`);
             })
             .finally(() => setIsAuthLoading(false));
         } else {
+          ensuredAuthUserId.current = null;
           setProfile(null);
           setIsAuthLoading(false);
         }
