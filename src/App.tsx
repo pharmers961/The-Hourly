@@ -1651,6 +1651,12 @@ export default function App() {
               </form>
             </div>
           )}
+          <p className="font-sans text-[9px] uppercase tracking-[0.18em] opacity-40 leading-relaxed max-w-xs mx-auto">
+            By continuing, you agree to our{' '}
+            <a href="/terms.html" className="underline underline-offset-2 hover:opacity-100">Terms</a>{' '}
+            and{' '}
+            <a href="/privacy.html" className="underline underline-offset-2 hover:opacity-100">Privacy Policy</a>.
+          </p>
         </div>
       </div>
     );
@@ -2961,6 +2967,11 @@ export default function App() {
                     <Trash2 size={14} />
                     <span>Delete My Account & Photos</span>
                   </button>
+
+                  <div className="flex items-center gap-4 pt-4 font-sans text-[10px] uppercase tracking-[0.2em] opacity-50">
+                    <a href="/privacy.html" className="hover:opacity-100 transition-opacity">Privacy</a>
+                    <a href="/terms.html" className="hover:opacity-100 transition-opacity">Terms</a>
+                  </div>
                 </div>
               </div>
               )}
