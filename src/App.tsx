@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, Info, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon, Maximize, Clock, RefreshCw } from 'lucide-react';
+import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon, Maximize, Clock, RefreshCw } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import html2canvas from 'html2canvas';
 import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImageToBlob, getRelativeTime, extractExifGps } from './utils';
@@ -20,7 +20,6 @@ export default function App() {
   const [magicLinkSent, setMagicLinkSent] = useState(false);
   const [isSendingLink, setIsSendingLink] = useState(false);
   const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
-  const [showPhotoInfo, setShowPhotoInfo] = useState(false);
   const [isNudging, setIsNudging] = useState(false);
   const [referenceTimezone, setReferenceTimezone] = useState<string>('');
   const [newPhotoIds, setNewPhotoIds] = useState<Set<string>>(new Set());
@@ -395,7 +394,6 @@ export default function App() {
       if (!pId) {
         photoEntryPushed.current = false;
         setSelectedPhoto(null);
-        setShowPhotoInfo(false);
         setIsFullscreenPhoto(false);
       } else {
         const p = photos.find(x => x.id === pId);
@@ -539,7 +537,6 @@ export default function App() {
         handlePrevPhoto();
       } else if (e.key === 'Escape') {
         setSelectedPhoto(null);
-        setShowPhotoInfo(false);
         setIsFullscreenPhoto(false);
       }
     };
@@ -1383,18 +1380,6 @@ export default function App() {
                                   <span className="font-sans text-[8px]">{photo.reactions['❤️'].length}</span>
                                 </div>
                               )}
-                              {photo.metadata && (
-                                <div className="absolute inset-x-0 bottom-0 p-2 md:p-3 bg-gradient-to-t from-black/60 via-black/30 to-transparent opacity-80 group-hover:opacity-100 transition-opacity duration-500 flex justify-between items-end print:opacity-100 print:bg-none print:bg-white/90">
-                                  <div className="flex items-center space-x-1 text-white print:text-black">
-                                    <Thermometer size={10} className="md:w-3 md:h-3 print:w-3 print:h-3" strokeWidth={2} />
-                                    <span className="font-sans text-[8px] md:text-[10px]">{renderTemperature(photo.metadata.temperature)}</span>
-                                  </div>
-                                  <div className="flex items-center space-x-1 text-white print:text-black">
-                                    <span className="font-sans text-[8px] md:text-[10px]">{photo.metadata.noiseLevel} dB</span>
-                                    <Activity size={10} className="md:w-3 md:h-3 print:w-3 print:h-3" strokeWidth={2} />
-                                  </div>
-                                </div>
-                              )}
                             </div>
                           </div>
                         ) : (
@@ -1499,7 +1484,7 @@ export default function App() {
       {selectedPhoto && (
         <div className="fixed inset-0 z-[100] bg-[#F9F8F5] flex flex-col items-center justify-center p-4 md:p-10 animate-in fade-in duration-300 print:hidden">
           <button 
-            onClick={() => { setSelectedPhoto(null); setShowPhotoInfo(false); setIsFullscreenPhoto(false); }}
+            onClick={() => { setSelectedPhoto(null); setIsFullscreenPhoto(false); }}
             className="absolute top-6 left-6 md:top-10 md:left-10 z-50 flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-60 transition-opacity cursor-pointer"
           >
             <span className="text-xl leading-none">&larr;</span> Back to Matrix
@@ -1526,13 +1511,6 @@ export default function App() {
             >
               <Share size={16} />
               <span className="hidden md:inline">Share</span>
-            </button>
-            <button
-              onClick={() => setShowPhotoInfo(!showPhotoInfo)}
-              className={`flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-100 transition-opacity cursor-pointer ${showPhotoInfo ? 'opacity-100' : 'opacity-60'}`}
-            >
-              <Info size={16} />
-              <span className="hidden md:inline">Info</span>
             </button>
           </div>
 
@@ -1636,7 +1614,7 @@ export default function App() {
               <div className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-60">
                 {renderTime(selectedPhoto.timestamp)}
               </div>
-              {showPhotoInfo && selectedPhoto.metadata && (
+              {selectedPhoto.metadata && (
                 <div className="flex flex-wrap items-center justify-center gap-4 md:gap-8 mt-6 font-sans text-[10px] uppercase tracking-widest border-t-[0.5px] border-[#1A1A1A] pt-6 w-full max-w-lg animate-in fade-in slide-in-from-top-2">
                   {selectedPhoto.metadata.location && (
                     <div className="flex items-center gap-2">
