@@ -15,7 +15,7 @@ export default function App() {
   const [users, setUsers] = useState<Record<string, AppUser>>({});
   const [memberIds, setMemberIds] = useState<string[]>([]);
   const [isCapturing, setIsCapturing] = useState(false);
-  const [profile, setProfile] = useState<(AppUser & { email: string }) | null>(null);
+  const [profile, setProfile] = useState<(AppUser & { email: string; isAdmin: boolean }) | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [loginEmail, setLoginEmail] = useState('');
   const [magicLinkSent, setMagicLinkSent] = useState(false);
@@ -39,6 +39,14 @@ export default function App() {
   // for, and whether a submission is in flight.
   const [reportingPhoto, setReportingPhoto] = useState<Photo | null>(null);
   const [isReporting, setIsReporting] = useState(false);
+
+  // Admin moderation view (owner only)
+  const isAdmin = !!profile?.isAdmin;
+  const [showAdmin, setShowAdmin] = useState(() => new URLSearchParams(window.location.search).get('admin') === '1');
+  const [adminPhotos, setAdminPhotos] = useState<api.AdminPhoto[]>([]);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminReportedOnly, setAdminReportedOnly] = useState(true);
+  const [adminBusyId, setAdminBusyId] = useState<string | null>(null);
   const collageRef = useRef<HTMLDivElement>(null);
 
   // Weekly recap ("The Weekly")
@@ -1259,6 +1267,55 @@ export default function App() {
       showToast(`Couldn't submit report${errDetail(err)}`);
     } finally {
       setIsReporting(false);
+    }
+  };
+
+  const loadAdminPhotos = useCallback(async () => {
+    setAdminLoading(true);
+    try {
+      setAdminPhotos(await api.fetchAdminPhotos());
+    } catch (err) {
+      console.error('Failed to load admin photos:', err);
+      showToast(`Failed to load admin data${errDetail(err)}`);
+    } finally {
+      setAdminLoading(false);
+    }
+  }, []);
+
+  // Open the admin view automatically when an admin lands on /?admin=1 (the
+  // link in report push/email), and load its data whenever it opens.
+  useEffect(() => {
+    if (showAdmin && isAdmin) void loadAdminPhotos();
+  }, [showAdmin, isAdmin, loadAdminPhotos]);
+
+  const handleAdminDeletePhoto = async (photoId: string) => {
+    if (!window.confirm('Permanently delete this photo for everyone? This cannot be undone.')) return;
+    setAdminBusyId(photoId);
+    try {
+      await api.adminDeletePhoto(photoId);
+      setAdminPhotos(prev => prev.filter(p => p.id !== photoId));
+      showToast('Photo deleted', 'success');
+    } catch (err) {
+      console.error('Failed to delete photo:', err);
+      showToast(`Failed to delete photo${errDetail(err)}`);
+    } finally {
+      setAdminBusyId(null);
+    }
+  };
+
+  const handleAdminMarkReviewed = async (photoId: string) => {
+    setAdminBusyId(photoId);
+    try {
+      await api.adminMarkReportsReviewed(photoId);
+      setAdminPhotos(prev => prev.map(p => p.id === photoId
+        ? { ...p, reports: p.reports.map(r => r.status === 'open' ? { ...r, status: 'reviewed' } : r) }
+        : p));
+      showToast('Marked as reviewed', 'success');
+    } catch (err) {
+      console.error('Failed to update reports:', err);
+      showToast(`Failed to update${errDetail(err)}`);
+    } finally {
+      setAdminBusyId(null);
     }
   };
 
@@ -2986,6 +3043,13 @@ export default function App() {
                   <span>{isGeneratingCollage ? 'Exporting...' : 'Export Collage Image'}</span>
                 </button>
 
+                {isAdmin && (
+                  <button onClick={() => { setShowSettings(false); setShowAdmin(true); }} className="flex items-center gap-2 text-sm text-gold opacity-90 hover:opacity-100 transition-opacity w-fit">
+                    <Flag size={14} />
+                    <span>Admin — all photos &amp; reports</span>
+                  </button>
+                )}
+
                 <div className="flex flex-col gap-4 pt-6 mt-2 border-t-[0.5px] border-ink/20">
                   <button onClick={handleLogout} className="flex items-center gap-2 text-sm opacity-60 hover:opacity-100 transition-opacity w-fit">
                     <LogOut size={14} />
@@ -3005,6 +3069,111 @@ export default function App() {
               </div>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Admin moderation: every photo, with reports, and a delete control */}
+      {showAdmin && isAdmin && (
+        <div className="fixed inset-0 z-[105] bg-paper text-ink overflow-y-auto print:hidden">
+          <div className="max-w-5xl mx-auto px-4 md:px-8 py-8">
+            <div className="flex items-center justify-between mb-2">
+              <h1 className="font-serif text-3xl md:text-4xl italic">Admin</h1>
+              <button
+                onClick={() => { setShowAdmin(false); const u = new URL(window.location.href); u.searchParams.delete('admin'); window.history.replaceState({}, '', u.toString()); }}
+                className="flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] opacity-60 hover:opacity-100 transition-opacity"
+              >
+                <X size={16} /> Close
+              </button>
+            </div>
+
+            <div className="flex items-center gap-4 mb-6 font-sans text-[10px] uppercase tracking-[0.2em]">
+              <button
+                onClick={() => setAdminReportedOnly(true)}
+                className={`pb-1 border-b-2 transition-colors ${adminReportedOnly ? 'border-ink opacity-100' : 'border-transparent opacity-50 hover:opacity-80'}`}
+              >
+                Reported
+              </button>
+              <button
+                onClick={() => setAdminReportedOnly(false)}
+                className={`pb-1 border-b-2 transition-colors ${!adminReportedOnly ? 'border-ink opacity-100' : 'border-transparent opacity-50 hover:opacity-80'}`}
+              >
+                All photos
+              </button>
+              <button onClick={loadAdminPhotos} className="ml-auto flex items-center gap-1 opacity-50 hover:opacity-100 transition-opacity" aria-label="Refresh">
+                <RefreshCw size={13} /> Refresh
+              </button>
+            </div>
+
+            {(() => {
+              const list = adminReportedOnly
+                ? adminPhotos.filter(p => p.reports.some(r => r.status === 'open'))
+                : adminPhotos;
+              if (adminLoading) return <p className="font-sans text-[11px] uppercase tracking-[0.2em] opacity-50 py-12 text-center">Loading…</p>;
+              if (list.length === 0) return (
+                <p className="font-sans text-[11px] uppercase tracking-[0.2em] opacity-50 py-12 text-center">
+                  {adminReportedOnly ? 'No open reports. All clear.' : 'No photos.'}
+                </p>
+              );
+              return (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {list.map(p => {
+                    const openReports = p.reports.filter(r => r.status === 'open');
+                    return (
+                      <div key={p.id} className="border-[0.5px] border-ink/20 bg-card flex flex-col">
+                        <img
+                          src={p.thumbUrl || p.imageUrl}
+                          alt=""
+                          className="w-full aspect-square object-cover cursor-zoom-in"
+                          onClick={() => window.open(p.imageUrl, '_blank')}
+                        />
+                        <div className="p-3 flex flex-col gap-2">
+                          <div className="flex items-baseline justify-between gap-2">
+                            <span className="font-serif italic text-lg leading-tight">{p.uploaderName}</span>
+                            <span className="font-sans text-[9px] uppercase tracking-widest opacity-50 shrink-0">
+                              {new Date(p.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                            </span>
+                          </div>
+                          {p.groupNames.length > 0 && (
+                            <p className="font-sans text-[9px] uppercase tracking-widest opacity-40">{p.groupNames.join(' · ')}</p>
+                          )}
+                          {openReports.length > 0 && (
+                            <div className="bg-red-50 border-[0.5px] border-red-200 px-2 py-1.5 text-red-700">
+                              <p className="font-sans text-[9px] uppercase tracking-widest font-bold mb-0.5">
+                                {openReports.length} report{openReports.length > 1 ? 's' : ''}
+                              </p>
+                              {openReports.map(r => (
+                                <p key={r.id} className="font-serif text-xs leading-snug">
+                                  “{r.reason}” — {r.reporterName}
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                          <div className="flex items-center gap-3 pt-1">
+                            <button
+                              onClick={() => handleAdminDeletePhoto(p.id)}
+                              disabled={adminBusyId === p.id}
+                              className="flex items-center gap-1.5 font-sans text-[10px] uppercase tracking-widest text-red-600 opacity-90 hover:opacity-100 disabled:opacity-40 transition-opacity"
+                            >
+                              <Trash2 size={13} /> Delete
+                            </button>
+                            {openReports.length > 0 && (
+                              <button
+                                onClick={() => handleAdminMarkReviewed(p.id)}
+                                disabled={adminBusyId === p.id}
+                                className="font-sans text-[10px] uppercase tracking-widest opacity-60 hover:opacity-100 disabled:opacity-40 transition-opacity"
+                              >
+                                Keep &amp; mark reviewed
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
