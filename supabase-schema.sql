@@ -747,6 +747,28 @@ drop policy if exists "push delete own" on public.push_subscriptions;
 create policy "push delete own" on public.push_subscriptions
   for delete to authenticated using (profile_id = public.my_profile_id());
 
+-- ---------------------------------------------------------------------------
+-- Photo views ("seen by") — records the first time each person opens a photo
+-- ---------------------------------------------------------------------------
+
+create table if not exists public.photo_views (
+  photo_id uuid not null references public.photos(id) on delete cascade,
+  profile_id uuid not null references public.profiles(id) on delete cascade,
+  viewed_at timestamptz not null default now(),
+  primary key (photo_id, profile_id)
+);
+
+alter table public.photo_views enable row level security;
+
+drop policy if exists "views read visible" on public.photo_views;
+create policy "views read visible" on public.photo_views
+  for select to authenticated using (public.can_view_photo(photo_id));
+
+drop policy if exists "views insert own" on public.photo_views;
+create policy "views insert own" on public.photo_views
+  for insert to authenticated
+  with check (profile_id = public.my_profile_id() and public.can_view_photo(photo_id));
+
 -- Hand each new nudge/notification row to the send-push Edge Function via
 -- pg_net (async HTTP from Postgres). pg_net is used instead of the
 -- supabase_functions webhook helper because the latter is provisioned

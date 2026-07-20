@@ -95,6 +95,17 @@ export default function App() {
   // "On this day" memories banner — dismissable once per day
   const [memoriesDismissedDay, setMemoriesDismissedDay] = useState<string | null>(() => localStorage.getItem('memoriesDismissedDay'));
 
+  // Unread activity: per-photo count of others' comments + reactions this
+  // device has already seen; anything beyond it earns a gold dot in the
+  // matrix. Purely device-local — no server state involved.
+  const [seenActivity, setSeenActivity] = useState<Record<string, number>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('seenActivity') || '{}');
+    } catch {
+      return {};
+    }
+  });
+
   const showToast = (message: string, type: 'error' | 'success' = 'error') => {
     const id = Date.now() + Math.random();
     setToasts(prev => [...prev, { id, message, type }]);
@@ -405,6 +416,73 @@ export default function App() {
   useEffect(() => {
     if (selectedGroupId) localStorage.setItem('selectedGroupId', selectedGroupId);
   }, [selectedGroupId]);
+
+  const othersActivityCount = useCallback((photo: Photo): number => {
+    if (!user) return 0;
+    const commentCount = (photo.comments || []).filter(c => c.userId !== user.uid).length;
+    const reactionCount = Object.values(photo.reactions || {}).reduce(
+      (n, ids) => n + ids.filter(id => id !== user.uid).length,
+      0
+    );
+    return commentCount + reactionCount;
+  }, [user]);
+
+  const hasUnreadActivity = useCallback(
+    (photo: Photo): boolean => othersActivityCount(photo) > (seenActivity[photo.id] ?? 0),
+    [othersActivityCount, seenActivity]
+  );
+
+  const persistSeenActivity = (next: Record<string, number>) => {
+    try {
+      localStorage.setItem('seenActivity', JSON.stringify(next));
+    } catch {
+      // storage unavailable — dots just won't survive a reload
+    }
+  };
+
+  // First sight of a group on this device: baseline its existing activity so
+  // history doesn't all light up as "unread" the day the feature arrives.
+  useEffect(() => {
+    if (!selectedGroupId || photos.length === 0) return;
+    let baselined: string[] = [];
+    try {
+      baselined = JSON.parse(localStorage.getItem('seenBaselinedGroups') || '[]');
+    } catch {
+      // fresh device
+    }
+    if (baselined.includes(selectedGroupId)) return;
+    setSeenActivity(prev => {
+      const next = { ...prev };
+      photos.forEach(p => {
+        if (!(p.id in next)) next[p.id] = othersActivityCount(p);
+      });
+      persistSeenActivity(next);
+      return next;
+    });
+    try {
+      localStorage.setItem('seenBaselinedGroups', JSON.stringify([...baselined, selectedGroupId]));
+    } catch {
+      // ignore
+    }
+  }, [selectedGroupId, photos, othersActivityCount]);
+
+  // Opening a photo marks its activity read (and keeps it read as more
+  // arrives while it's open), and files the server-side "seen by" receipt.
+  const lastRecordedViewId = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedPhoto || !user) return;
+    setSeenActivity(prev => {
+      const count = othersActivityCount(selectedPhoto);
+      if (prev[selectedPhoto.id] === count) return prev;
+      const next = { ...prev, [selectedPhoto.id]: count };
+      persistSeenActivity(next);
+      return next;
+    });
+    if (selectedPhoto.userId !== user.uid && lastRecordedViewId.current !== selectedPhoto.id) {
+      lastRecordedViewId.current = selectedPhoto.id;
+      api.recordPhotoView(selectedPhoto.id, user.uid);
+    }
+  }, [selectedPhoto, user, othersActivityCount]);
 
   // Load the signed-in user's groups, and complete a pending invite-link join
   const pendingJoinHandled = useRef(false);
@@ -718,6 +796,24 @@ export default function App() {
   }, [photos]);
   const todayKey = currentTime.toDateString();
   const showMemories = !!user && !!memories && isSelectedDateToday && memoriesDismissedDay !== todayKey;
+
+  // The last 7 days at a glance — tap a day to jump the matrix to it.
+  // todayKey keeps the window rolling past midnight.
+  const weekStrip = useMemo(() => {
+    const today = new Date();
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (6 - i));
+      const dayPhotos = photos.filter(p => new Date(p.timestamp).toDateString() === d.toDateString());
+      return {
+        date: d,
+        weekday: d.toLocaleDateString('en-US', { weekday: 'short' }),
+        thumb: dayPhotos[dayPhotos.length - 1],
+        count: dayPhotos.length,
+        isSelected: d.toDateString() === selectedDate.toDateString(),
+      };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photos, selectedDate, todayKey]);
 
   const displayedSlots = useMemo(() => {
     return timeSlots.filter(slot => {
@@ -1662,6 +1758,31 @@ export default function App() {
         </div>
       </header>
 
+      {/* Week strip: the last 7 days at a glance */}
+      {user && groups.length > 0 && (
+        <div className="flex justify-center gap-2.5 md:gap-4 border-b-[0.5px] border-ink/10 bg-paper px-4 py-2 shrink-0 print:hidden overflow-x-auto">
+          {weekStrip.map(day => (
+            <button
+              key={day.date.toDateString()}
+              onClick={() => setSelectedDate(day.date)}
+              className={`flex flex-col items-center gap-1 shrink-0 transition-opacity ${day.isSelected ? '' : 'opacity-55 hover:opacity-100'}`}
+            >
+              <span className={`font-sans text-[8px] uppercase tracking-widest ${day.isSelected ? 'text-gold font-bold' : 'opacity-60'}`}>
+                {day.weekday}
+              </span>
+              <div className={`w-9 h-9 md:w-11 md:h-11 bg-card border-[0.5px] p-0.5 ${day.isSelected ? 'border-gold' : 'border-ink/20'}`}>
+                {day.thumb ? (
+                  <img src={day.thumb.thumbUrl || day.thumb.imageUrl} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full bg-muted/60" />
+                )}
+              </div>
+              <span className="font-sans text-[8px] leading-none opacity-40">{day.count > 0 ? day.count : '·'}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* iOS install hint: without home-screen install, iPhones get no push */}
       {showIosHint && (
         <div className="flex items-center justify-between gap-3 bg-gold/15 border-b-[0.5px] border-gold/40 px-4 md:px-10 py-2.5 shrink-0 print:hidden">
@@ -1817,6 +1938,12 @@ export default function App() {
                                   <Heart size={10} className="fill-current" />
                                   <span className="font-sans text-[8px]">{photo.reactions['❤️'].length}</span>
                                 </div>
+                              )}
+                              {hasUnreadActivity(photo) && (
+                                <div
+                                  className="absolute bottom-1.5 right-1.5 w-2 h-2 rounded-full bg-gold shadow-[0_0_6px_rgba(197,160,89,0.9)] print:hidden"
+                                  title="New activity"
+                                />
                               )}
                             </div>
                           </div>
@@ -2088,6 +2215,12 @@ export default function App() {
               <div className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-60">
                 {renderTime(selectedPhoto.timestamp)}
               </div>
+              {/* Read receipts — shown only to the photo's author */}
+              {user && selectedPhoto.userId === user.uid && (selectedPhoto.viewedBy?.length ?? 0) > 0 && (
+                <div className="font-sans text-[9px] uppercase tracking-[0.2em] opacity-40">
+                  Seen by {(selectedPhoto.viewedBy || []).map(id => users[id]?.name.split(' ')[0] || 'Someone').join(', ')}
+                </div>
+              )}
               {selectedPhoto.metadata && (
                 <div className="flex flex-wrap items-center justify-center gap-4 md:gap-8 mt-6 font-sans text-[10px] uppercase tracking-widest border-t-[0.5px] border-ink pt-6 w-full max-w-lg animate-in fade-in slide-in-from-top-2">
                   {selectedPhoto.metadata.location && (

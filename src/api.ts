@@ -75,12 +75,14 @@ function mapProfileRow(row: ProfileRow): AppUser {
   };
 }
 
-function mapPhotoRow(ph: PhotoRow, profiles: Record<string, AppUser>): Photo {
+function mapPhotoRow(ph: PhotoRow, profiles: Record<string, AppUser>, viewsByPhoto?: Record<string, string[]>): Photo {
   const reactions: Record<string, string[]> = {};
   ph.reactions.forEach(r => {
     (reactions[r.emoji] ||= []).push(r.profile_id);
   });
+  const viewedBy = (viewsByPhoto?.[ph.id] || []).filter(id => id !== ph.profile_id);
   return {
+    viewedBy: viewedBy.length > 0 ? viewedBy : undefined,
     id: ph.id,
     userId: ph.profile_id,
     timestamp: ph.taken_at,
@@ -288,11 +290,35 @@ export async function fetchGroupData(groupId: string): Promise<AppData> {
     (extra as ProfileRow[] || []).forEach(p => { profiles[p.id] = mapProfileRow(p); });
   }
 
+  // Who has opened each photo ("seen by"). Fetched separately — and errors
+  // swallowed — so photo loading keeps working before the photo_views table
+  // exists in the database. RLS already restricts rows to visible photos.
+  const viewsByPhoto: Record<string, string[]> = {};
+  const viewsRes = await supabase.from('photo_views').select('photo_id, profile_id');
+  if (!viewsRes.error) {
+    (viewsRes.data || []).forEach(v => {
+      (viewsByPhoto[v.photo_id as string] ||= []).push(v.profile_id as string);
+    });
+  }
+
   const photos: Photo[] = photoRows
-    .map(row => mapPhotoRow(row, profiles))
+    .map(row => mapPhotoRow(row, profiles, viewsByPhoto))
     .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
   return { profiles, photos, memberIds };
+}
+
+// Read receipt: records that this person opened a photo. First view wins
+// (no churn on re-opens); failures are ignored — a missing photo_views table
+// or a blip here should never affect viewing.
+export async function recordPhotoView(photoId: string, profileId: string): Promise<void> {
+  await supabase
+    .from('photo_views')
+    .upsert(
+      { photo_id: photoId, profile_id: profileId },
+      { onConflict: 'photo_id,profile_id', ignoreDuplicates: true }
+    )
+    .then(() => undefined, () => undefined);
 }
 
 // A retried queued upload re-sends the same storage path; "already there"

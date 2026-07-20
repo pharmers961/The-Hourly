@@ -44,6 +44,7 @@ export interface Photo {
   metadata?: PhotoMetadata;
   comments?: Comment[];
   reactions?: Record<string, string[]>; // map of emoji to userIds
+  viewedBy?: string[]; // profile ids (excluding the author) who opened this photo
 }
 
 export interface TimeSlot {
