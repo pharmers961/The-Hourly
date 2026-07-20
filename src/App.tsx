@@ -829,24 +829,6 @@ export default function App() {
   const todayKey = currentTime.toDateString();
   const showMemories = !!user && !!memories && isSelectedDateToday && memoriesDismissedDay !== todayKey;
 
-  // The last 7 days at a glance — tap a day to jump the matrix to it.
-  // todayKey keeps the window rolling past midnight.
-  const weekStrip = useMemo(() => {
-    const today = new Date();
-    return Array.from({ length: 7 }, (_, i) => {
-      const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (6 - i));
-      const dayPhotos = photos.filter(p => new Date(p.timestamp).toDateString() === d.toDateString());
-      return {
-        date: d,
-        weekday: d.toLocaleDateString('en-US', { weekday: 'short' }),
-        thumb: dayPhotos[dayPhotos.length - 1],
-        count: dayPhotos.length,
-        isSelected: d.toDateString() === selectedDate.toDateString(),
-      };
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [photos, selectedDate, todayKey]);
-
   const displayedSlots = useMemo(() => {
     return timeSlots.filter(slot => {
       if (isSelectedDateToday) return true;
@@ -1789,31 +1771,6 @@ export default function App() {
           </div>
         </div>
       </header>
-
-      {/* Week strip: the last 7 days at a glance */}
-      {user && groups.length > 0 && (
-        <div className="flex justify-center gap-2.5 md:gap-4 border-b-[0.5px] border-ink/10 bg-paper px-4 py-2 shrink-0 print:hidden overflow-x-auto">
-          {weekStrip.map(day => (
-            <button
-              key={day.date.toDateString()}
-              onClick={() => setSelectedDate(day.date)}
-              className={`flex flex-col items-center gap-1 shrink-0 transition-opacity ${day.isSelected ? '' : 'opacity-55 hover:opacity-100'}`}
-            >
-              <span className={`font-sans text-[8px] uppercase tracking-widest ${day.isSelected ? 'text-gold font-bold' : 'opacity-60'}`}>
-                {day.weekday}
-              </span>
-              <div className={`w-9 h-9 md:w-11 md:h-11 bg-card border-[0.5px] p-0.5 ${day.isSelected ? 'border-gold' : 'border-ink/20'}`}>
-                {day.thumb ? (
-                  <img src={day.thumb.thumbUrl || day.thumb.imageUrl} alt="" className="w-full h-full object-cover" />
-                ) : (
-                  <div className="w-full h-full bg-muted/60" />
-                )}
-              </div>
-              <span className="font-sans text-[8px] leading-none opacity-40">{day.count > 0 ? day.count : '·'}</span>
-            </button>
-          ))}
-        </div>
-      )}
 
       {/* iOS install hint: without home-screen install, iPhones get no push */}
       {showIosHint && (
