@@ -15,6 +15,16 @@
     <meta property="og:image" content="https://the-hourly.vercel.app/icon-512.png" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="The Hourly" />
+    <script>
+      // Apply the last-known theme before first paint. The real preference
+      // lives in the Supabase profile; this device-local echo of it prevents
+      // the white flash while that profile is still loading.
+      try {
+        if (localStorage.getItem('theme') === 'dark') {
+          document.documentElement.classList.add('theme-dark');
+        }
+      } catch (e) { /* private browsing etc. — boot light */ }
+    </script>
   </head>
   <body>
     <div id="root"></div>

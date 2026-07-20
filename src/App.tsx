@@ -642,10 +642,21 @@ export default function App() {
   // The theme class lives on <html> (not the app root) so the body
   // background — visible wherever the matrix overflows the viewport —
   // matches the theme instead of flashing white around the edges.
-  const isDarkTheme = users[user?.uid ?? '']?.settings?.theme === 'dark';
+  // index.html applies the localStorage copy before first paint; until this
+  // person's settings have actually loaded, leave that boot theme alone —
+  // toggling on the not-yet-loaded default here is what caused the flash
+  // of light mode on refresh.
+  const myUser = (user ? users[user.uid] : undefined) || profile;
+  const isDarkTheme = myUser?.settings?.theme === 'dark';
   useEffect(() => {
+    if (!myUser) return;
     document.documentElement.classList.toggle('theme-dark', isDarkTheme);
-  }, [isDarkTheme]);
+    try {
+      localStorage.setItem('theme', isDarkTheme ? 'dark' : 'light');
+    } catch {
+      // storage unavailable (private browsing) — the boot flash returns, nothing worse
+    }
+  }, [myUser, isDarkTheme]);
 
   useEffect(() => {
     if (showSettings && user) {
