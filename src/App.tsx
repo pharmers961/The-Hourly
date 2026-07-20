@@ -2010,6 +2010,26 @@ export default function App() {
                       <span>Enable Browser Alerts</span>
                     </button>
                   )}
+                  {notificationPermission === 'granted' && (
+                    <button
+                      onClick={async () => {
+                        if (profile) {
+                          await api.registerPushSubscription(profile.id);
+                          showToast('This device is registered for alerts', 'success');
+                        }
+                      }}
+                      className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity w-fit"
+                    >
+                      <Bell size={14} className="text-green-600" />
+                      <span>Alerts Enabled — Tap to Re-sync</span>
+                    </button>
+                  )}
+                  {notificationPermission === 'denied' && (
+                    <div className="flex items-center gap-2 text-sm opacity-60">
+                      <Bell size={14} className="text-red-600" />
+                      <span>Alerts blocked — allow notifications for this site in your browser settings</span>
+                    </div>
+                  )}
 
                   <button onClick={() => window.print()} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity w-fit">
                     <Download size={14} />
