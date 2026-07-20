@@ -1067,7 +1067,10 @@ export default function App() {
     }
   };
 
-  const gridStyle = { gridTemplateColumns: `64px repeat(${columnUsers.length > 0 ? columnUsers.length : 1}, 1fr)` };
+  // Narrower time column + tighter gaps reclaim room for photo columns so
+  // small groups (2-3 people) fit on a phone screen without horizontal
+  // scrolling, rather than being forced wider than the viewport.
+  const gridStyle = { gridTemplateColumns: `48px repeat(${columnUsers.length > 0 ? columnUsers.length : 1}, 1fr)` };
 
   const STANDARD_TIMEZONES = [
     { label: 'New York (EST)', value: 'America/New_York' },
@@ -1260,11 +1263,11 @@ export default function App() {
         ) : (
         <div
           ref={collageRef}
-          style={{ minWidth: Math.max(380, columnUsers.length * 172 + 90) }}
+          style={{ minWidth: Math.max(200, 48 + columnUsers.length * 96) }}
           className="max-w-4xl mx-auto px-4 md:px-10 pb-24 w-full print:px-0 print:pb-0"
         >
           {/* Column Headers (X-Axis: Names) */}
-          <div className="sticky top-0 z-20 bg-[#F9F8F5] pt-6 grid gap-4 mb-4 border-b-[0.5px] border-[#1A1A1A] pb-2 print:relative print:bg-white print:border-black print:pt-4" style={gridStyle}>
+          <div className="sticky top-0 z-20 bg-[#F9F8F5] pt-6 grid gap-2 md:gap-4 mb-4 border-b-[0.5px] border-[#1A1A1A] pb-2 print:relative print:bg-white print:border-black print:pt-4" style={gridStyle}>
             <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end hidden md:block print:bg-white print:text-black">Hour / Slot</div>
             <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end md:hidden print:hidden">Time</div>
             {columnUsers.map(sibling => {
@@ -1306,7 +1309,7 @@ export default function App() {
                 <div 
                   id={isCurrent ? 'current-hour-slot' : undefined}
                   key={slot.hourKey} 
-                  className={`grid gap-4 p-2 md:p-0 transition-colors print:page-break-inside-avoid print:h-[200px] ${
+                  className={`grid gap-2 md:gap-4 p-2 md:p-0 transition-colors print:page-break-inside-avoid print:h-[200px] ${
                     isCurrent ? 'outline outline-1 outline-offset-4 outline-[#C5A059] bg-[#C5A059] bg-opacity-5 print:outline-none print:bg-transparent' : ''
                   }`} 
                   style={gridStyle}
