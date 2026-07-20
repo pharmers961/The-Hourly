@@ -1422,12 +1422,12 @@ export default function App() {
                   }`} 
                   style={gridStyle}
                 >
-                  <div className={`sticky left-0 z-10 flex flex-col justify-center border-r-[0.5px] border-ink border-opacity-10 print:border-black print:border-opacity-20 print:bg-card ${isCurrent ? 'pl-2 bg-paper-warm print:pl-0' : 'bg-paper'}`}>
+                  <div className="sticky left-0 z-10 flex flex-col justify-center border-r-[0.5px] border-ink border-opacity-10 bg-paper print:border-black print:border-opacity-20 print:bg-card">
                     <span className={`text-lg md:text-xl font-light italic leading-tight print:text-2xl print:text-black ${isCurrent ? 'text-gold print:text-black' : ''}`}>
                       {slot.displayTime}
                     </span>
-                    <span className={`font-sans text-[8px] md:text-[9px] uppercase tracking-widest mt-1 print:text-[10px] print:text-black print:opacity-60 ${isCurrent ? 'text-gold font-bold print:font-normal' : 'opacity-50'}`}>
-                      {isCurrent ? <><span className="print:hidden">Live Now</span><span className="hidden print:inline">{slot.displayDate}</span></> : slot.displayDate}
+                    <span className={`font-sans text-[8px] md:text-[9px] uppercase mt-1 print:text-[10px] print:text-black print:opacity-60 ${isCurrent ? 'tracking-wide text-gold font-bold print:font-normal' : 'tracking-widest opacity-50'}`}>
+                      {isCurrent ? <><span className="print:hidden whitespace-nowrap">Live Now</span><span className="hidden print:inline">{slot.displayDate}</span></> : slot.displayDate}
                     </span>
                   </div>
                   
