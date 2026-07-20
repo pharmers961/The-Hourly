@@ -1,6 +1,0 @@
-{
-  "firestore": {
-    "database": "ai-studio-thehourly-530ce651-c22d-48f3-af78-3cb6c4e2b873",
-    "rules": "firestore.rules"
-  }
-}
