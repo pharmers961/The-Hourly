@@ -479,6 +479,14 @@ export default function App() {
   const canAdmin = !!selectedGroup;
   const isOwner = selectedGroup?.role === 'owner';
 
+  // The theme class lives on <html> (not the app root) so the body
+  // background — visible wherever the matrix overflows the viewport —
+  // matches the theme instead of flashing white around the edges.
+  const isDarkTheme = users[user?.uid ?? '']?.settings?.theme === 'dark';
+  useEffect(() => {
+    document.documentElement.classList.toggle('theme-dark', isDarkTheme);
+  }, [isDarkTheme]);
+
   useEffect(() => {
     if (showSettings && user) {
       const displayLocation = activeUsers.find(u => u.id === user.uid)?.settings?.displayLocation || '';
@@ -1039,7 +1047,7 @@ export default function App() {
     try {
       const canvas = await html2canvas(collageRef.current, {
         scale: 2,
-        backgroundColor: '#F9F8F5',
+        backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--color-paper').trim() || '#F9F8F5',
         logging: false,
         useCORS: true
       });
@@ -1167,7 +1175,7 @@ export default function App() {
 
   if (!isSupabaseConfigured) {
     return (
-      <div className="h-screen bg-[#F9F8F5] text-[#1A1A1A] font-serif flex flex-col items-center justify-center p-4">
+      <div className="h-screen bg-paper text-ink font-serif flex flex-col items-center justify-center p-4">
         <div className="max-w-md text-center space-y-4">
           <h1 className="text-4xl tracking-tight leading-none italic">The Hourly</h1>
           <p className="font-sans text-xs uppercase tracking-[0.2em] opacity-60">Setup required</p>
@@ -1179,13 +1187,13 @@ export default function App() {
 
   if (!isAuthLoading && !user) {
     return (
-      <div className="h-screen bg-[#F9F8F5] text-[#1A1A1A] font-serif flex flex-col items-center justify-center p-4 selection:bg-[#1A1A1A] selection:text-[#F9F8F5]">
+      <div className="h-screen bg-paper text-ink font-serif flex flex-col items-center justify-center p-4 selection:bg-ink selection:text-paper">
         <div className="max-w-md text-center space-y-8">
           <div>
             <h1 className="text-4xl md:text-6xl tracking-tight leading-none mb-4 italic">The Hourly</h1>
             <p className="font-sans text-xs md:text-sm uppercase tracking-[0.2em] opacity-60">A Synchronized Visual Journal</p>
             {hasPendingInvite && (
-              <p className="font-sans text-[10px] uppercase tracking-[0.2em] text-[#C5A059] mt-3">You've been invited — sign in to join</p>
+              <p className="font-sans text-[10px] uppercase tracking-[0.2em] text-gold mt-3">You've been invited — sign in to join</p>
             )}
           </div>
           {magicLinkSent ? (
@@ -1205,16 +1213,16 @@ export default function App() {
             <div className="flex flex-col items-center gap-5">
               <button
                 onClick={handleGoogleLogin}
-                className="mx-auto flex items-center gap-2 bg-[#1A1A1A] text-[#F9F8F5] px-6 py-3 hover:bg-black transition-colors font-sans text-[10px] uppercase tracking-widest cursor-pointer w-64 justify-center"
+                className="mx-auto flex items-center gap-2 bg-ink text-paper px-6 py-3 hover:opacity-90 transition-colors font-sans text-[10px] uppercase tracking-widest cursor-pointer w-64 justify-center"
               >
                 <LogIn size={14} />
                 Continue with Google
               </button>
 
               <div className="flex items-center gap-3 w-64 opacity-40">
-                <div className="h-px flex-1 bg-[#1A1A1A]" />
+                <div className="h-px flex-1 bg-ink" />
                 <span className="font-sans text-[9px] uppercase tracking-widest">or</span>
-                <div className="h-px flex-1 bg-[#1A1A1A]" />
+                <div className="h-px flex-1 bg-ink" />
               </div>
 
               <form onSubmit={handleSendMagicLink} noValidate className="flex flex-col items-center gap-5">
@@ -1224,12 +1232,12 @@ export default function App() {
                   onChange={(e) => setLoginEmail(e.target.value)}
                   placeholder="you@email.com"
                   autoComplete="email"
-                  className="bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors text-center w-64 placeholder:opacity-30"
+                  className="bg-transparent border-b-[0.5px] border-ink px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors text-center w-64 placeholder:opacity-30"
                 />
                 <button
                   type="submit"
                   disabled={isSendingLink}
-                  className="mx-auto flex items-center gap-2 border-[0.5px] border-[#1A1A1A] px-6 py-3 hover:bg-[#1A1A1A] hover:text-[#F9F8F5] transition-colors font-sans text-[10px] uppercase tracking-widest cursor-pointer disabled:opacity-50"
+                  className="mx-auto flex items-center gap-2 border-[0.5px] border-ink px-6 py-3 hover:bg-ink hover:text-paper transition-colors font-sans text-[10px] uppercase tracking-widest cursor-pointer disabled:opacity-50"
                 >
                   <LogIn size={14} />
                   {isSendingLink ? 'Sending...' : 'Email Me a Login Link'}
@@ -1260,19 +1268,19 @@ export default function App() {
   };
 
   return (
-    <div className={`h-screen bg-[#F9F8F5] text-[#1A1A1A] font-serif flex flex-col selection:bg-[#1A1A1A] selection:text-[#F9F8F5] overflow-hidden print:overflow-visible print:bg-white print:h-auto ${users[user?.uid ?? '']?.settings?.theme === 'dark' ? 'theme-dark' : ''}`}>
+    <div className="h-screen bg-paper text-ink font-serif flex flex-col selection:bg-ink selection:text-paper overflow-hidden print:overflow-visible print:bg-card print:h-auto">
       {/* Top Right Settings Button */}
       {!isAuthLoading && user && (
         <button 
           onClick={() => setShowSettings(true)} 
-          className="absolute top-4 right-4 md:top-10 md:right-10 z-50 p-2 opacity-60 hover:opacity-100 transition-opacity print:hidden bg-[#F9F8F5]/80 backdrop-blur-sm rounded-full"
+          className="absolute top-4 right-4 md:top-10 md:right-10 z-50 p-2 opacity-60 hover:opacity-100 transition-opacity print:hidden bg-paper/80 backdrop-blur-sm rounded-full"
         >
           <Settings size={20} strokeWidth={1.5} />
         </button>
       )}
 
       {/* Header Section */}
-      <header className="flex flex-col md:flex-row md:justify-between md:items-end border-b-[0.5px] border-[#1A1A1A] print:border-black p-4 md:px-10 md:pt-10 pb-6 gap-4 shrink-0 z-20 bg-[#F9F8F5] print:bg-white">
+      <header className="flex flex-col md:flex-row md:justify-between md:items-end border-b-[0.5px] border-ink print:border-black p-4 md:px-10 md:pt-10 pb-6 gap-4 shrink-0 z-20 bg-paper print:bg-card">
         <div>
           <h1 className="text-4xl md:text-5xl tracking-tight leading-none mb-2 italic print:text-5xl print:mb-4">The Hourly</h1>
           <p className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-60 print:text-[12px] print:opacity-80">A Synchronized Visual Journal</p>
@@ -1284,8 +1292,8 @@ export default function App() {
                   onClick={() => setSelectedGroupId(g.id)}
                   className={`font-sans text-[10px] uppercase tracking-widest px-3 py-1.5 border-[0.5px] transition-colors ${
                     g.id === selectedGroupId
-                      ? 'bg-[#1A1A1A] text-[#F9F8F5] border-[#1A1A1A]'
-                      : 'border-[#1A1A1A] border-opacity-30 opacity-60 hover:opacity-100'
+                      ? 'bg-ink text-paper border-ink'
+                      : 'border-ink border-opacity-30 opacity-60 hover:opacity-100'
                   }`}
                 >
                   {g.name}
@@ -1293,7 +1301,7 @@ export default function App() {
               ))}
               <button
                 onClick={() => setShowCreateGroup(true)}
-                className="font-sans text-[10px] uppercase tracking-widest px-3 py-1.5 border-[0.5px] border-dashed border-[#1A1A1A] border-opacity-30 opacity-50 hover:opacity-100 transition-opacity"
+                className="font-sans text-[10px] uppercase tracking-widest px-3 py-1.5 border-[0.5px] border-dashed border-ink border-opacity-30 opacity-50 hover:opacity-100 transition-opacity"
               >
                 + New Group
               </button>
@@ -1311,7 +1319,7 @@ export default function App() {
             </div>
             
             {isSelectedDateToday && (
-              <span className="print:hidden border-l border-[#1A1A1A] border-opacity-20 pl-3">
+              <span className="print:hidden border-l border-ink border-opacity-20 pl-3">
                 {currentTime.toLocaleTimeString('en-US', { 
                   hour12: activeUsers.find(u => u.id === user?.uid)?.settings?.timeFormat !== '24h', 
                   hour: '2-digit', 
@@ -1332,7 +1340,7 @@ export default function App() {
 
       {/* iOS install hint: without home-screen install, iPhones get no push */}
       {showIosHint && (
-        <div className="flex items-center justify-between gap-3 bg-[#C5A059]/15 border-b-[0.5px] border-[#C5A059]/40 px-4 md:px-10 py-2.5 shrink-0 print:hidden">
+        <div className="flex items-center justify-between gap-3 bg-gold/15 border-b-[0.5px] border-gold/40 px-4 md:px-10 py-2.5 shrink-0 print:hidden">
           <span className="font-sans text-[11px] leading-snug">
             Get nudges on your iPhone: tap <span className="font-medium">Share</span> → <span className="font-medium">Add to Home Screen</span>, then open The Hourly from the icon.
           </span>
@@ -1355,7 +1363,7 @@ export default function App() {
             <p className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-50 mb-6">Create one, or ask someone to send you an invite link</p>
             <button
               onClick={() => setShowCreateGroup(true)}
-              className="border-[0.5px] border-[#1A1A1A] px-6 py-3 hover:bg-[#1A1A1A] hover:text-[#F9F8F5] transition-colors font-sans text-[10px] uppercase tracking-widest cursor-pointer"
+              className="border-[0.5px] border-ink px-6 py-3 hover:bg-ink hover:text-paper transition-colors font-sans text-[10px] uppercase tracking-widest cursor-pointer"
             >
               Create a Group
             </button>
@@ -1367,9 +1375,9 @@ export default function App() {
           className="max-w-4xl mx-auto px-4 md:px-10 pb-24 w-full print:px-0 print:pb-0"
         >
           {/* Column Headers (X-Axis: Names) */}
-          <div className="sticky top-0 z-20 bg-[#F9F8F5] pt-6 grid gap-2 md:gap-4 mb-4 border-b-[0.5px] border-[#1A1A1A] pb-2 print:relative print:bg-white print:border-black print:pt-4" style={gridStyle}>
-            <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end hidden md:block print:bg-white print:text-black">Hour / Slot</div>
-            <div className="sticky left-0 z-30 bg-[#F9F8F5] font-sans text-[10px] uppercase tracking-widest self-end md:hidden print:hidden">Time</div>
+          <div className="sticky top-0 z-20 bg-paper pt-6 grid gap-2 md:gap-4 mb-4 border-b-[0.5px] border-ink pb-2 print:relative print:bg-card print:border-black print:pt-4" style={gridStyle}>
+            <div className="sticky left-0 z-30 bg-paper font-sans text-[10px] uppercase tracking-widest self-end hidden md:block print:bg-card print:text-black">Hour / Slot</div>
+            <div className="sticky left-0 z-30 bg-paper font-sans text-[10px] uppercase tracking-widest self-end md:hidden print:hidden">Time</div>
             {columnUsers.map(sibling => {
               // Split on any whitespace (incl. non-breaking spaces) so every
               // name renders as first name over last name.
@@ -1382,7 +1390,7 @@ export default function App() {
                       {nameParts.length > 1 && <br />}
                       {nameParts.slice(1).join(' ')}
                     </span>
-                    <div className={`absolute -right-2 top-0 w-1.5 h-1.5 md:w-2 md:h-2 rounded-full transition-colors duration-1000 print:hidden ${isSiblingOnline(sibling.id) ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-[#1A1A1A] opacity-20'}`} />
+                    <div className={`absolute -right-2 top-0 w-1.5 h-1.5 md:w-2 md:h-2 rounded-full transition-colors duration-1000 print:hidden ${isSiblingOnline(sibling.id) ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 'bg-ink opacity-20'}`} />
                   </div>
                   <span className="font-sans text-[8px] md:text-[9px] uppercase opacity-40 tracking-tighter truncate block max-w-full px-1 print:text-black print:opacity-60 mt-1">
                     {getSiblingLocation(sibling)}
@@ -1395,7 +1403,7 @@ export default function App() {
           {/* Content area */}
           <div className="space-y-6 md:space-y-4 print:space-y-8 relative">
             {displayedSlots.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-20 text-[#1A1A1A] opacity-60">
+              <div className="flex flex-col items-center justify-center py-20 text-ink opacity-60">
                 <ImageIcon size={48} strokeWidth={1} className="mb-4" />
                 <p className="font-serif text-2xl italic mb-2">No photos yet</p>
                 <p className="font-sans text-[10px] uppercase tracking-[0.2em]">Check back later or choose another date</p>
@@ -1410,15 +1418,15 @@ export default function App() {
                   id={isCurrent ? 'current-hour-slot' : undefined}
                   key={slot.hourKey} 
                   className={`grid gap-2 md:gap-4 p-2 md:p-0 transition-colors print:page-break-inside-avoid print:h-[200px] ${
-                    isCurrent ? 'outline outline-1 outline-offset-4 outline-[#C5A059] bg-[#C5A059] bg-opacity-5 print:outline-none print:bg-transparent' : ''
+                    isCurrent ? 'outline outline-1 outline-offset-4 outline-gold bg-gold/5 print:outline-none print:bg-transparent' : ''
                   }`} 
                   style={gridStyle}
                 >
-                  <div className={`sticky left-0 z-10 flex flex-col justify-center border-r-[0.5px] border-[#1A1A1A] border-opacity-10 print:border-black print:border-opacity-20 print:bg-white ${isCurrent ? 'pl-2 bg-[#F6F4EE] print:pl-0' : 'bg-[#F9F8F5]'}`}>
-                    <span className={`text-lg md:text-xl font-light italic leading-tight print:text-2xl print:text-black ${isCurrent ? 'text-[#C5A059] print:text-black' : ''}`}>
+                  <div className={`sticky left-0 z-10 flex flex-col justify-center border-r-[0.5px] border-ink border-opacity-10 print:border-black print:border-opacity-20 print:bg-card ${isCurrent ? 'pl-2 bg-paper-warm print:pl-0' : 'bg-paper'}`}>
+                    <span className={`text-lg md:text-xl font-light italic leading-tight print:text-2xl print:text-black ${isCurrent ? 'text-gold print:text-black' : ''}`}>
                       {slot.displayTime}
                     </span>
-                    <span className={`font-sans text-[8px] md:text-[9px] uppercase tracking-widest mt-1 print:text-[10px] print:text-black print:opacity-60 ${isCurrent ? 'text-[#C5A059] font-bold print:font-normal' : 'opacity-50'}`}>
+                    <span className={`font-sans text-[8px] md:text-[9px] uppercase tracking-widest mt-1 print:text-[10px] print:text-black print:opacity-60 ${isCurrent ? 'text-gold font-bold print:font-normal' : 'opacity-50'}`}>
                       {isCurrent ? <><span className="print:hidden">Live Now</span><span className="hidden print:inline">{slot.displayDate}</span></> : slot.displayDate}
                     </span>
                   </div>
@@ -1429,8 +1437,8 @@ export default function App() {
                       <div key={sibling.id} className="w-full max-w-[140px] md:max-w-[220px] aspect-square mx-auto">
                         {photo ? (
                           <div 
-                            className={`h-full bg-white border-[0.5px] border-[#1A1A1A] border-opacity-20 p-1 flex flex-col hover:border-opacity-60 transition-all duration-1000 cursor-pointer print:border-black print:border-opacity-30 ${
-                              newPhotoIds.has(photo.id) ? 'ring-2 ring-[#C5A059] ring-offset-2 ring-offset-[#F9F8F5] animate-pulse shadow-[0_0_15px_rgba(197,160,89,0.3)] z-10 relative' : ''
+                            className={`h-full bg-card border-[0.5px] border-ink border-opacity-20 p-1 flex flex-col hover:border-opacity-60 transition-all duration-1000 cursor-pointer print:border-black print:border-opacity-30 ${
+                              newPhotoIds.has(photo.id) ? 'ring-2 ring-gold ring-offset-2 ring-offset-paper animate-pulse shadow-[0_0_15px_rgba(197,160,89,0.3)] z-10 relative' : ''
                             }`}
                             onClick={() => setSelectedPhoto(photo)}
                             onDoubleClick={(e) => {
@@ -1438,9 +1446,9 @@ export default function App() {
                               handleReaction(photo.id, '❤️');
                             }}
                           >
-                            <div className="bg-[#EAE8E4] flex-grow relative overflow-hidden group print:bg-transparent">
+                            <div className="bg-muted flex-grow relative overflow-hidden group print:bg-transparent">
                               {!loadedImages.has(photo.id) && (
-                                <div className="absolute inset-0 bg-[#EAE8E4] animate-pulse print:hidden" />
+                                <div className="absolute inset-0 bg-muted animate-pulse print:hidden" />
                               )}
                               <img
                                 src={photo.thumbUrl || photo.imageUrl}
@@ -1452,7 +1460,7 @@ export default function App() {
                                 <span className="font-sans text-[8px]">{getRelativeTime(photo.timestamp)}</span>
                               </div>
                               {photo.reactions && photo.reactions['❤️']?.length > 0 && (
-                                <div className="absolute top-2 right-2 flex items-center gap-1 bg-white/80 backdrop-blur-sm rounded-full px-1.5 py-0.5 text-xs text-red-500 shadow-sm">
+                                <div className="absolute top-2 right-2 flex items-center gap-1 bg-card/80 backdrop-blur-sm rounded-full px-1.5 py-0.5 text-xs text-red-500 shadow-sm">
                                   <Heart size={10} className="fill-current" />
                                   <span className="font-sans text-[8px]">{photo.reactions['❤️'].length}</span>
                                 </div>
@@ -1461,11 +1469,11 @@ export default function App() {
                           </div>
                         ) : (
                           <div
-                            className={`h-full flex flex-col items-center justify-center transition-colors duration-500 print:bg-transparent print:border print:border-dashed print:border-black/20 ${isCurrent ? 'border-[0.5px] border-dashed border-[#C5A059]' : 'border-[0.5px] border-dashed border-[#1A1A1A]/15'} ${isCurrent && isNudging ? 'bg-[#C5A059] bg-opacity-20 animate-pulse print:animate-none print:bg-transparent' : ''} ${(isCurrent && sibling.id === user?.uid) ? 'cursor-pointer hover:bg-[#C5A059] hover:bg-opacity-10' : ''}`}
+                            className={`h-full flex flex-col items-center justify-center transition-colors duration-500 print:bg-transparent print:border print:border-dashed print:border-black/20 ${isCurrent ? 'border-[0.5px] border-dashed border-gold' : 'border-[0.5px] border-dashed border-ink/15'} ${isCurrent && isNudging ? 'bg-gold/20 animate-pulse print:animate-none print:bg-transparent' : ''} ${(isCurrent && sibling.id === user?.uid) ? 'cursor-pointer hover:bg-gold/10' : ''}`}
                             onClick={() => { if (isCurrent && sibling.id === user?.uid) handleCaptureClick(); }}
                           >
-                            {isCurrent && sibling.id === user?.uid && <Camera size={20} strokeWidth={1.5} className="text-[#C5A059] mb-1 md:mb-2 opacity-60" />}
-                            <span className={`font-sans text-[8px] md:text-[9px] uppercase tracking-widest transition-colors duration-500 text-center print:text-black/40 ${isCurrent ? 'text-[#C5A059] opacity-60' : 'text-[#1A1A1A] opacity-25'} ${isCurrent && isNudging ? 'opacity-100 font-bold' : ''}`}>
+                            {isCurrent && sibling.id === user?.uid && <Camera size={20} strokeWidth={1.5} className="text-gold mb-1 md:mb-2 opacity-60" />}
+                            <span className={`font-sans text-[8px] md:text-[9px] uppercase tracking-widest transition-colors duration-500 text-center print:text-black/40 ${isCurrent ? 'text-gold opacity-60' : 'text-ink opacity-25'} ${isCurrent && isNudging ? 'opacity-100 font-bold' : ''}`}>
                               {isCurrent && sibling.id === user?.uid ? 'Upload' : (isCurrent && isNudging ? 'Nudged!' : (isCurrent ? 'Pending' : 'Missed'))}
                             </span>
                           </div>
@@ -1495,7 +1503,7 @@ export default function App() {
           <button 
             onClick={handleCaptureClick}
             disabled={isCapturing}
-            className="bg-[#1A1A1A] text-[#F9F8F5] px-8 py-4 rounded-none flex items-center space-x-3 hover:bg-black transition-all shadow-2xl hover:scale-105 active:scale-95 disabled:opacity-50 disabled:hover:scale-100 cursor-pointer disabled:cursor-wait"
+            className="bg-ink text-paper px-8 py-4 rounded-none flex items-center space-x-3 hover:opacity-90 transition-all shadow-2xl hover:scale-105 active:scale-95 disabled:opacity-50 disabled:hover:scale-100 cursor-pointer disabled:cursor-wait"
           >
             <Camera size={16} strokeWidth={1.5} className={isCapturing ? "animate-pulse" : ""} />
             <span className="text-[10px] font-sans font-medium tracking-[0.2em] uppercase">
@@ -1518,7 +1526,7 @@ export default function App() {
               document.getElementById('current-hour-slot')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }
           }}
-          className="bg-white/80 backdrop-blur-sm border-[0.5px] border-[#1A1A1A] text-[#1A1A1A] p-3 rounded-full hover:bg-white transition-all shadow-lg hover:scale-110 active:scale-95 group flex items-center gap-2"
+          className="bg-card/80 backdrop-blur-sm border-[0.5px] border-ink text-ink p-3 rounded-full hover:bg-card transition-all shadow-lg hover:scale-110 active:scale-95 group flex items-center gap-2"
           title={isSelectedDateToday ? "Jump to current hour" : "Jump to today"}
         >
           {isSelectedDateToday ? <Clock size={20} strokeWidth={1.5} /> : <Calendar size={20} strokeWidth={1.5} />}
@@ -1531,7 +1539,7 @@ export default function App() {
       {/* Missed Sync Toast */}
       {missedSiblings.length > 0 && (
         <div className="fixed bottom-24 right-6 md:bottom-28 md:right-10 z-50 animate-in slide-in-from-bottom-8 fade-in duration-500 print:hidden">
-          <div className="bg-[#1A1A1A] text-[#F9F8F5] shadow-2xl p-4 md:p-5 flex flex-col gap-3 max-w-[280px] md:max-w-sm relative">
+          <div className="bg-ink text-paper shadow-2xl p-4 md:p-5 flex flex-col gap-3 max-w-[280px] md:max-w-sm relative">
             <button 
               onClick={handleDismissNudge}
               className="absolute top-2 right-2 p-1 opacity-50 hover:opacity-100 transition-opacity"
@@ -1540,16 +1548,16 @@ export default function App() {
               <X size={14} />
             </button>
             <div className="flex items-start gap-3 mt-1">
-              <Bell size={16} className="text-[#C5A059] animate-pulse shrink-0 mt-0.5" />
+              <Bell size={16} className="text-gold animate-pulse shrink-0 mt-0.5" />
               <div className="flex flex-col gap-1 pr-4">
-                <span className="font-sans text-[10px] md:text-[11px] uppercase tracking-widest leading-tight text-[#C5A059] font-bold">Sync Missed</span>
+                <span className="font-sans text-[10px] md:text-[11px] uppercase tracking-widest leading-tight text-gold font-bold">Sync Missed</span>
                 <span className="font-serif text-sm opacity-90 leading-snug">
                   {missedSiblings.map(s => s.name).join(', ')} {missedSiblings.length > 1 ? 'are' : 'is'} 30m+ late to the {currentTime.toLocaleTimeString('en-US', { hour: 'numeric', hour12: true })} window.
                 </span>
               </div>
             </div>
             {user && (
-              <button onClick={handleNudge} disabled={isNudging} className="mt-1 border border-[#F9F8F5] border-opacity-20 hover:border-opacity-100 bg-white/5 hover:bg-white/10 px-4 py-2 font-sans text-[9px] uppercase tracking-[0.2em] transition-all disabled:opacity-50 text-center">
+              <button onClick={handleNudge} disabled={isNudging} className="mt-1 border border-paper border-opacity-20 hover:border-opacity-100 bg-card/5 hover:bg-card/10 px-4 py-2 font-sans text-[9px] uppercase tracking-[0.2em] transition-all disabled:opacity-50 text-center">
                 {isNudging ? 'Nudging...' : 'Send Auto-Nudge'}
               </button>
             )}
@@ -1559,7 +1567,7 @@ export default function App() {
 
       {/* Full Screen Photo Modal */}
       {selectedPhoto && (
-        <div className="fixed inset-0 z-[100] bg-[#F9F8F5] flex flex-col items-center justify-center p-4 md:p-10 animate-in fade-in duration-300 print:hidden">
+        <div className="fixed inset-0 z-[100] bg-paper flex flex-col items-center justify-center p-4 md:p-10 animate-in fade-in duration-300 print:hidden">
           <button 
             onClick={() => { setSelectedPhoto(null); setIsFullscreenPhoto(false); }}
             className="absolute top-6 left-6 md:top-10 md:left-10 z-50 flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-60 transition-opacity cursor-pointer"
@@ -1613,7 +1621,7 @@ export default function App() {
                 className="absolute left-0 md:left-4 z-10 p-4 opacity-0 group-hover:opacity-100 disabled:opacity-0 transition-opacity disabled:cursor-not-allowed hidden md:block"
                 aria-label="Newer photo"
               >
-                <ChevronLeft size={48} strokeWidth={1} className="text-[#1A1A1A] drop-shadow-md hover:scale-110 transition-transform" />
+                <ChevronLeft size={48} strokeWidth={1} className="text-ink drop-shadow-md hover:scale-110 transition-transform" />
               </button>
 
               <button
@@ -1621,7 +1629,7 @@ export default function App() {
                 disabled={sortedPhotos.findIndex(p => p.id === selectedPhoto.id) === 0}
                 className="absolute -left-2 z-10 p-2 md:hidden opacity-60 disabled:opacity-0"
               >
-                <ChevronLeft size={32} strokeWidth={1} className="text-[#1A1A1A]" />
+                <ChevronLeft size={32} strokeWidth={1} className="text-ink" />
               </button>
 
               <div className={`relative inline-block md:mx-20 ${isFullscreenPhoto ? 'w-full h-full flex items-center justify-center' : 'mx-8 max-w-full'}`}>
@@ -1631,7 +1639,7 @@ export default function App() {
                       src={selectedPhoto.imageUrl}
                       alt="Full screen view"
                       onDoubleClick={(e) => { e.stopPropagation(); handleDoubleTapHeart(); }}
-                      className={`${isFullscreenPhoto ? 'h-screen w-auto max-w-full object-contain border-none p-0' : 'max-h-[50vh] md:max-h-[60vh] w-auto object-contain border-[0.5px] border-[#1A1A1A] p-3 shadow-xl'} bg-white cursor-zoom-in transition-all`}
+                      className={`${isFullscreenPhoto ? 'h-screen w-auto max-w-full object-contain border-none p-0' : 'max-h-[50vh] md:max-h-[60vh] w-auto object-contain border-[0.5px] border-ink p-3 shadow-xl'} bg-card cursor-zoom-in transition-all`}
                     />
                   </TransformComponent>
                 </TransformWrapper>
@@ -1644,13 +1652,13 @@ export default function App() {
 
                 <button
                   onClick={() => setIsFullscreenPhoto(!isFullscreenPhoto)}
-                  className={`absolute ${isFullscreenPhoto ? 'top-4 right-4' : 'top-4 right-4'} z-50 p-2 bg-white/80 backdrop-blur-sm rounded-full opacity-60 hover:opacity-100 transition-opacity`}
+                  className={`absolute ${isFullscreenPhoto ? 'top-4 right-4' : 'top-4 right-4'} z-50 p-2 bg-card/80 backdrop-blur-sm rounded-full opacity-60 hover:opacity-100 transition-opacity`}
                 >
-                  <Maximize size={16} className="text-[#1A1A1A]" />
+                  <Maximize size={16} className="text-ink" />
                 </button>
 
               {!isFullscreenPhoto && (
-                <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-white px-3 py-2 border-[0.5px] border-[#1A1A1A] shadow-md rounded-full z-20">
+                <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-card px-3 py-2 border-[0.5px] border-ink shadow-md rounded-full z-20">
                 {['❤️', '🔥', '😂', '😮'].map(emoji => {
                   const count = (selectedPhoto.reactions?.[emoji] || []).length;
                   const hasReacted = (selectedPhoto.reactions?.[emoji] || []).includes(user?.uid || '');
@@ -1658,7 +1666,7 @@ export default function App() {
                     <button 
                       key={emoji}
                       onClick={() => handleToggleReaction(emoji)}
-                      className={`flex items-center gap-1 px-2 py-1 rounded-full transition-colors ${hasReacted ? 'bg-[#F9F8F5]' : 'hover:bg-gray-50'}`}
+                      className={`flex items-center gap-1 px-2 py-1 rounded-full transition-colors ${hasReacted ? 'bg-paper' : 'hover:bg-ink/5'}`}
                     >
                       <span className="text-base leading-none">{emoji}</span>
                       {count > 0 && <span className="font-sans text-[10px] font-bold">{count}</span>}
@@ -1675,7 +1683,7 @@ export default function App() {
                 className="absolute right-0 md:right-4 z-10 p-4 opacity-0 group-hover:opacity-100 disabled:opacity-0 transition-opacity disabled:cursor-not-allowed hidden md:block"
                 aria-label="Older photo"
               >
-                <ChevronRight size={48} strokeWidth={1} className="text-[#1A1A1A] drop-shadow-md hover:scale-110 transition-transform" />
+                <ChevronRight size={48} strokeWidth={1} className="text-ink drop-shadow-md hover:scale-110 transition-transform" />
               </button>
 
               <button
@@ -1683,7 +1691,7 @@ export default function App() {
                 disabled={sortedPhotos.findIndex(p => p.id === selectedPhoto.id) === sortedPhotos.length - 1}
                 className="absolute -right-2 z-10 p-2 md:hidden opacity-60 disabled:opacity-0"
               >
-                <ChevronRight size={32} strokeWidth={1} className="text-[#1A1A1A]" />
+                <ChevronRight size={32} strokeWidth={1} className="text-ink" />
               </button>
             </div>
             
@@ -1692,7 +1700,7 @@ export default function App() {
                 {renderTime(selectedPhoto.timestamp)}
               </div>
               {selectedPhoto.metadata && (
-                <div className="flex flex-wrap items-center justify-center gap-4 md:gap-8 mt-6 font-sans text-[10px] uppercase tracking-widest border-t-[0.5px] border-[#1A1A1A] pt-6 w-full max-w-lg animate-in fade-in slide-in-from-top-2">
+                <div className="flex flex-wrap items-center justify-center gap-4 md:gap-8 mt-6 font-sans text-[10px] uppercase tracking-widest border-t-[0.5px] border-ink pt-6 w-full max-w-lg animate-in fade-in slide-in-from-top-2">
                   {selectedPhoto.metadata.location && (
                     <div className="flex items-center gap-2">
                       {selectedPhoto.metadata.lat && selectedPhoto.metadata.lng ? (
@@ -1700,7 +1708,7 @@ export default function App() {
                           href={`https://www.google.com/maps?q=${selectedPhoto.metadata.lat},${selectedPhoto.metadata.lng}`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="flex items-center gap-2 hover:text-[#C5A059] transition-colors"
+                          className="flex items-center gap-2 hover:text-gold transition-colors"
                           title="Open in Google Maps"
                         >
                           <MapPin size={14} strokeWidth={1.5} className="opacity-70" />
@@ -1735,7 +1743,7 @@ export default function App() {
               <div className="w-full max-w-md mt-6 text-left">
                 <div className="flex flex-col gap-3 mb-6">
                   {(selectedPhoto.comments || []).map(comment => (
-                    <div key={comment.id} className="bg-white p-3 border-[0.5px] border-[#1A1A1A] shadow-sm flex flex-col gap-1 relative group">
+                    <div key={comment.id} className="bg-card p-3 border-[0.5px] border-ink shadow-sm flex flex-col gap-1 relative group">
                       <div className="flex items-center justify-between">
                         <span className="font-serif font-bold italic text-sm">{comment.userName}</span>
                         <div className="flex items-center gap-2">
@@ -1764,7 +1772,7 @@ export default function App() {
                     value={commentText}
                     onChange={(e) => setCommentText(e.target.value)}
                     placeholder="Add a comment..."
-                    className="flex-1 bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-xs outline-none focus:border-opacity-50 transition-colors"
+                    className="flex-1 bg-transparent border-b-[0.5px] border-ink px-2 py-2 font-sans text-xs outline-none focus:border-opacity-50 transition-colors"
                   />
                   <button type="submit" disabled={!commentText.trim()} className="font-sans text-[10px] uppercase tracking-[0.2em] px-4 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30">
                     Post
@@ -1781,7 +1789,7 @@ export default function App() {
                           key={u.id}
                           type="button"
                           onClick={() => setCommentText(prev => `${prev}${prev && !prev.endsWith(' ') ? ' ' : ''}@${first} `)}
-                          className="font-sans text-[10px] px-2.5 py-1 border-[0.5px] border-[#1A1A1A] border-opacity-30 rounded-full opacity-50 hover:opacity-100 transition-opacity"
+                          className="font-sans text-[10px] px-2.5 py-1 border-[0.5px] border-ink border-opacity-30 rounded-full opacity-50 hover:opacity-100 transition-opacity"
                         >
                           @{first}
                         </button>
@@ -1801,7 +1809,7 @@ export default function App() {
             <div
               key={t.id}
               className={`px-5 py-3 shadow-2xl font-sans text-[10px] uppercase tracking-[0.2em] text-center animate-in fade-in slide-in-from-top-2 duration-300 ${
-                t.type === 'error' ? 'bg-red-700 text-white' : 'bg-[#1A1A1A] text-[#F9F8F5]'
+                t.type === 'error' ? 'bg-red-700 text-white' : 'bg-ink text-paper'
               }`}
             >
               {t.message}
@@ -1813,11 +1821,11 @@ export default function App() {
       {/* Capture: choose which group(s) to share to */}
       {pendingCaptureFile && (
         <div className="fixed inset-0 z-[250] bg-black/40 flex items-center justify-center p-4">
-          <div className="bg-[#F9F8F5] p-6 md:p-8 w-full max-w-sm shadow-2xl border-[0.5px] border-[#1A1A1A] animate-in fade-in zoom-in-95 duration-200">
+          <div className="bg-paper p-6 md:p-8 w-full max-w-sm shadow-2xl border-[0.5px] border-ink animate-in fade-in zoom-in-95 duration-200">
             <h2 className="font-serif text-xl italic mb-1">Share to</h2>
             <p className="font-sans text-[10px] uppercase tracking-widest opacity-50 mb-4">Choose which group(s) see this moment</p>
             {pendingPreviewUrl && (
-              <div className="mb-5 bg-white border-[0.5px] border-[#1A1A1A] border-opacity-20 p-1 w-28 h-28 mx-auto">
+              <div className="mb-5 bg-card border-[0.5px] border-ink border-opacity-20 p-1 w-28 h-28 mx-auto">
                 <img src={pendingPreviewUrl} alt="Photo to share" className="w-full h-full object-cover" />
               </div>
             )}
@@ -1843,14 +1851,14 @@ export default function App() {
               <button
                 onClick={() => setPendingCaptureFile(null)}
                 disabled={isCapturing}
-                className="flex-1 border-[0.5px] border-[#1A1A1A] py-2 font-sans text-[10px] uppercase tracking-widest opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30"
+                className="flex-1 border-[0.5px] border-ink py-2 font-sans text-[10px] uppercase tracking-widest opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30"
               >
                 Cancel
               </button>
               <button
                 onClick={handleConfirmCaptureGroups}
                 disabled={captureGroupIds.size === 0 || isCapturing}
-                className="flex-1 bg-[#1A1A1A] text-[#F9F8F5] py-2 font-sans text-[10px] uppercase tracking-widest hover:bg-black transition-colors disabled:opacity-40"
+                className="flex-1 bg-ink text-paper py-2 font-sans text-[10px] uppercase tracking-widest hover:opacity-90 transition-colors disabled:opacity-40"
               >
                 {isCapturing ? 'Sharing...' : 'Share'}
               </button>
@@ -1862,7 +1870,7 @@ export default function App() {
       {/* Create Group */}
       {showCreateGroup && (
         <div className="fixed inset-0 z-[250] bg-black/40 flex items-center justify-center p-4">
-          <div className="bg-[#F9F8F5] p-6 md:p-8 w-full max-w-sm shadow-2xl border-[0.5px] border-[#1A1A1A] animate-in fade-in zoom-in-95 duration-200">
+          <div className="bg-paper p-6 md:p-8 w-full max-w-sm shadow-2xl border-[0.5px] border-ink animate-in fade-in zoom-in-95 duration-200">
             <h2 className="font-serif text-xl italic mb-6">New Group</h2>
             <input
               type="text"
@@ -1871,19 +1879,19 @@ export default function App() {
               onKeyDown={(e) => { if (e.key === 'Enter') handleCreateGroup(); }}
               placeholder="e.g. Friends"
               autoFocus
-              className="w-full bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-sm outline-none mb-8 placeholder:opacity-30"
+              className="w-full bg-transparent border-b-[0.5px] border-ink px-2 py-2 font-sans text-sm outline-none mb-8 placeholder:opacity-30"
             />
             <div className="flex gap-3">
               <button
                 onClick={() => { setShowCreateGroup(false); setNewGroupName(''); }}
-                className="flex-1 border-[0.5px] border-[#1A1A1A] py-2 font-sans text-[10px] uppercase tracking-widest opacity-60 hover:opacity-100 transition-opacity"
+                className="flex-1 border-[0.5px] border-ink py-2 font-sans text-[10px] uppercase tracking-widest opacity-60 hover:opacity-100 transition-opacity"
               >
                 Cancel
               </button>
               <button
                 onClick={handleCreateGroup}
                 disabled={!newGroupName.trim()}
-                className="flex-1 bg-[#1A1A1A] text-[#F9F8F5] py-2 font-sans text-[10px] uppercase tracking-widest hover:bg-black transition-colors disabled:opacity-40"
+                className="flex-1 bg-ink text-paper py-2 font-sans text-[10px] uppercase tracking-widest hover:opacity-90 transition-colors disabled:opacity-40"
               >
                 Create
               </button>
@@ -1895,7 +1903,7 @@ export default function App() {
       {/* Settings Modal */}
       {showSettings && user && (
         <div className="fixed inset-0 z-[200] bg-black/40 flex items-center justify-center p-4">
-          <div className="bg-[#F9F8F5] p-6 md:p-10 w-full max-w-md max-h-[90vh] overflow-y-auto shadow-2xl relative animate-in fade-in zoom-in-95 duration-200 border-[0.5px] border-[#1A1A1A]">
+          <div className="bg-paper p-6 md:p-10 w-full max-w-md max-h-[90vh] overflow-y-auto shadow-2xl relative animate-in fade-in zoom-in-95 duration-200 border-[0.5px] border-ink">
             <button
               onClick={() => {
                 handleSaveSettings({ displayLocation: localLocationInput });
@@ -1912,7 +1920,7 @@ export default function App() {
               {/* ---- Profile ---- */}
               <button
                 onClick={() => setOpenSettingsSection(prev => (prev === 'profile' ? '' : 'profile'))}
-                className="w-full flex items-center justify-between py-3 border-b-[0.5px] border-[#1A1A1A]/20"
+                className="w-full flex items-center justify-between py-3 border-b-[0.5px] border-ink/20"
               >
                 <span className="font-sans text-[11px] uppercase tracking-[0.2em]">Profile &amp; Display</span>
                 <ChevronRight size={14} className={`opacity-50 transition-transform ${openSettingsSection === 'profile' ? 'rotate-90' : ''}`} />
@@ -1927,7 +1935,7 @@ export default function App() {
                   onChange={(e) => setLocalNameInput(e.target.value)}
                   onBlur={handleSaveName}
                   placeholder="First Last"
-                  className="bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors placeholder:opacity-30"
+                  className="bg-transparent border-b-[0.5px] border-ink px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors placeholder:opacity-30"
                 />
               </div>
 
@@ -1939,7 +1947,7 @@ export default function App() {
                   onChange={(e) => setLocalLocationInput(e.target.value)}
                   onBlur={() => handleSaveSettings({ displayLocation: localLocationInput })}
                   placeholder="e.g. San Francisco"
-                  className="bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors placeholder:opacity-30"
+                  className="bg-transparent border-b-[0.5px] border-ink px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors placeholder:opacity-30"
                 />
               </div>
 
@@ -2028,7 +2036,7 @@ export default function App() {
                   <select 
                     value={referenceTimezone}
                     onChange={(e) => setReferenceTimezone(e.target.value)}
-                    className="bg-transparent border-b-[0.5px] border-[#1A1A1A] outline-none cursor-pointer w-full py-1"
+                    className="bg-transparent border-b-[0.5px] border-ink outline-none cursor-pointer w-full py-1"
                   >
                     <option value="">Local Time</option>
                     <optgroup label="Family">
@@ -2052,7 +2060,7 @@ export default function App() {
                 <>
                 <button
                   onClick={() => setOpenSettingsSection(prev => (prev === 'group' ? '' : 'group'))}
-                  className="w-full flex items-center justify-between py-3 border-b-[0.5px] border-[#1A1A1A]/20"
+                  className="w-full flex items-center justify-between py-3 border-b-[0.5px] border-ink/20"
                 >
                   <span className="font-sans text-[11px] uppercase tracking-[0.2em]">Group — {selectedGroup.name}</span>
                   <ChevronRight size={14} className={`opacity-50 transition-transform ${openSettingsSection === 'group' ? 'rotate-90' : ''}`} />
@@ -2065,7 +2073,7 @@ export default function App() {
                     value={manageGroupName}
                     onChange={(e) => setManageGroupName(e.target.value)}
                     onBlur={handleRenameGroup}
-                    className="bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors"
+                    className="bg-transparent border-b-[0.5px] border-ink px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors"
                   />
 
                   <button onClick={handleCopyInviteLink} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity w-fit">
@@ -2110,7 +2118,7 @@ export default function App() {
                         <select
                           value={importSourceGroupId}
                           onChange={(e) => setImportSourceGroupId(e.target.value)}
-                          className="flex-1 bg-transparent border-b-[0.5px] border-[#1A1A1A] outline-none py-1 font-sans text-sm cursor-pointer"
+                          className="flex-1 bg-transparent border-b-[0.5px] border-ink outline-none py-1 font-sans text-sm cursor-pointer"
                         >
                           <option value="">Choose a group...</option>
                           {groups.filter(g => g.id !== selectedGroup.id).map(g => (
@@ -2120,7 +2128,7 @@ export default function App() {
                         <button
                           onClick={handleImportPhotos}
                           disabled={!importSourceGroupId || isImportingPhotos}
-                          className="font-sans text-[10px] uppercase tracking-widest px-3 border-[0.5px] border-[#1A1A1A] opacity-80 hover:opacity-100 transition-opacity disabled:opacity-30"
+                          className="font-sans text-[10px] uppercase tracking-widest px-3 border-[0.5px] border-ink opacity-80 hover:opacity-100 transition-opacity disabled:opacity-30"
                         >
                           {isImportingPhotos ? '...' : 'Import'}
                         </button>
@@ -2149,7 +2157,7 @@ export default function App() {
               {/* ---- Notifications ---- */}
               <button
                 onClick={() => setOpenSettingsSection(prev => (prev === 'notifications' ? '' : 'notifications'))}
-                className="w-full flex items-center justify-between py-3 border-b-[0.5px] border-[#1A1A1A]/20"
+                className="w-full flex items-center justify-between py-3 border-b-[0.5px] border-ink/20"
               >
                 <span className="font-sans text-[11px] uppercase tracking-[0.2em]">Notifications</span>
                 <ChevronRight size={14} className={`opacity-50 transition-transform ${openSettingsSection === 'notifications' ? 'rotate-90' : ''}`} />
@@ -2158,12 +2166,12 @@ export default function App() {
               <div className="flex flex-col gap-4 py-4">
                 <div className="flex flex-col gap-3">
                   <button onClick={handleNudge} disabled={isNudging} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity disabled:opacity-30 w-fit">
-                    <Bell size={14} className={isNudging ? 'animate-bounce text-[#C5A059]' : ''} />
+                    <Bell size={14} className={isNudging ? 'animate-bounce text-gold' : ''} />
                     <span>Send Nudge to Family</span>
                   </button>
 
                   {notificationPermission === 'default' && (
-                    <button onClick={requestNotificationPermission} className="flex items-center gap-2 text-sm text-[#C5A059] hover:opacity-100 transition-opacity w-fit">
+                    <button onClick={requestNotificationPermission} className="flex items-center gap-2 text-sm text-gold hover:opacity-100 transition-opacity w-fit">
                       <Bell size={14} />
                       <span>Enable Browser Alerts</span>
                     </button>
@@ -2225,7 +2233,7 @@ export default function App() {
               {/* ---- Data & Account ---- */}
               <button
                 onClick={() => setOpenSettingsSection(prev => (prev === 'data' ? '' : 'data'))}
-                className="w-full flex items-center justify-between py-3 border-b-[0.5px] border-[#1A1A1A]/20"
+                className="w-full flex items-center justify-between py-3 border-b-[0.5px] border-ink/20"
               >
                 <span className="font-sans text-[11px] uppercase tracking-[0.2em]">Data &amp; Account</span>
                 <ChevronRight size={14} className={`opacity-50 transition-transform ${openSettingsSection === 'data' ? 'rotate-90' : ''}`} />
@@ -2241,7 +2249,7 @@ export default function App() {
                   <span>{isGeneratingCollage ? 'Exporting...' : 'Export Collage Image'}</span>
                 </button>
 
-                <div className="flex flex-col gap-4 pt-6 mt-2 border-t-[0.5px] border-[#1A1A1A]/20">
+                <div className="flex flex-col gap-4 pt-6 mt-2 border-t-[0.5px] border-ink/20">
                   <button onClick={handleLogout} className="flex items-center gap-2 text-sm opacity-60 hover:opacity-100 transition-opacity w-fit">
                     <LogOut size={14} />
                     <span>Logout</span>

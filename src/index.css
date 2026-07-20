@@ -1,35 +1,36 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&family=Playfair+Display:wght@400;500;600&display=swap');
 @import "tailwindcss";
 
+/* The app's palette as themeable tokens. Every component styles against
+   these (bg-paper, text-ink, border-gold, ...) so the dark theme is a pure
+   variable swap — photos and the gold accent stay untouched. */
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-serif: "Playfair Display", ui-serif, Georgia, serif;
+
+  --color-paper: #F9F8F5;      /* app background */
+  --color-paper-warm: #F6F4EE; /* current-hour highlight cells */
+  --color-card: #FFFFFF;       /* photo frames, comment cards, pills */
+  --color-muted: #EAE8E4;      /* image placeholders */
+  --color-ink: #1A1A1A;        /* text and borders */
+  --color-gold: #C5A059;       /* accent */
+}
+
+/* Warm near-black dark theme. Applied to <html> so the body background
+   (visible when the matrix overflows horizontally) follows along. */
+.theme-dark {
+  --color-paper: #131110;
+  --color-paper-warm: #1D1A15;
+  --color-card: #1E1B17;
+  --color-muted: #272319;
+  --color-ink: #E9E4DA;
+  --color-gold: #C5A059;
 }
 
 body {
-  background-color: #ffffff;
-  color: #000000;
+  background-color: var(--color-paper);
+  color: var(--color-ink);
   -webkit-font-smoothing: antialiased;
-}
-
-/* Dark mode: the app is two-tone (cream/ink with a gold accent), so a
-   filter inversion with hue restoration produces a faithful dark theme
-   without restyling hundreds of hardcoded color classes. Photos get the
-   same filter re-applied to cancel it out and render true-to-life. */
-.theme-dark {
-  filter: invert(1) hue-rotate(180deg);
-  background-color: #060707;
-}
-.theme-dark img,
-.theme-dark video {
-  filter: invert(1) hue-rotate(180deg);
-}
-@media print {
-  .theme-dark,
-  .theme-dark img,
-  .theme-dark video {
-    filter: none !important;
-  }
 }
 
 @media print {
@@ -37,7 +38,16 @@ body {
     margin: 1cm;
     size: A4 portrait;
   }
-  
+
+  /* Print in light colors regardless of theme */
+  .theme-dark {
+    --color-paper: #F9F8F5;
+    --color-paper-warm: #F6F4EE;
+    --color-card: #FFFFFF;
+    --color-muted: #EAE8E4;
+    --color-ink: #1A1A1A;
+  }
+
   body {
     background-color: #ffffff;
     -webkit-print-color-adjust: exact;
@@ -47,7 +57,7 @@ body {
   .print\:hidden {
     display: none !important;
   }
-  
+
   .print\:grid-cols-auto {
     grid-template-columns: 120px repeat(auto-fit, minmax(0, 1fr)) !important;
   }
@@ -56,11 +66,11 @@ body {
     page-break-inside: avoid;
     break-inside: avoid;
   }
-  
+
   .print\:text-black {
     color: #000 !important;
   }
-  
+
   .print\:border-black {
     border-color: #000 !important;
   }
