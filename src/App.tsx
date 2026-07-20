@@ -657,14 +657,21 @@ export default function App() {
     const heartCount = (p: Photo) =>
       Object.values(p.reactions || {}).reduce((n, arr) => n + arr.length, 0);
 
-    const days: { label: string; dayPhotos: Photo[] }[] = [];
+    // Each day leads with its most-hearted photo, broadsheet-style; the rest
+    // run as a small strip beside it.
+    const days: { label: string; dayPhotos: Photo[]; featured: Photo | null; rest: Photo[] }[] = [];
     for (let i = 0; i < 7; i++) {
       const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+      const dayPhotos = weekPhotos
+        .filter(p => new Date(p.timestamp).toDateString() === d.toDateString())
+        .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+      const featured =
+        [...dayPhotos].sort((a, b) => heartCount(b) - heartCount(a) || b.timestamp.localeCompare(a.timestamp))[0] || null;
       days.push({
         label: d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }),
-        dayPhotos: weekPhotos
-          .filter(p => new Date(p.timestamp).toDateString() === d.toDateString())
-          .sort((a, b) => a.timestamp.localeCompare(b.timestamp)),
+        dayPhotos,
+        featured,
+        rest: dayPhotos.filter(p => p !== featured),
       });
     }
 
@@ -699,8 +706,33 @@ export default function App() {
     const totalComments = weekPhotos.reduce((n, p) => n + (p.comments?.length || 0), 0);
     const rangeLabel = `${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
 
-    return { weekPhotos, days, hero, perPerson, busiestHourLabel, totalHearts, totalComments, rangeLabel, heartCount };
-  }, [showRecap, photos, activeUsers]);
+    const firstName = (id: string) => users[id]?.name.split(' ')[0] || 'Someone';
+    const hourLabel = (p: Photo) => new Date(p.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', hour12: true });
+
+    // Quote of the Week: the comment on the most-hearted photo wins,
+    // tiebroken by length — the family's best line in print.
+    const quote =
+      weekPhotos
+        .flatMap(p => (p.comments || []).map(c => ({ text: c.text, author: c.userName, on: firstName(p.userId), score: heartCount(p) })))
+        .sort((a, b) => b.score - a.score || b.text.length - a.text.length)[0] || null;
+
+    // Superlatives: earliest and latest post of the week by time of day,
+    // and whoever's photos collected the most hearts.
+    const byTimeOfDay = [...weekPhotos].sort((a, b) => {
+      const t = (p: Photo) => new Date(p.timestamp).getHours() * 60 + new Date(p.timestamp).getMinutes();
+      return t(a) - t(b);
+    });
+    const earliest = byTimeOfDay[0];
+    const latest = byTimeOfDay[byTimeOfDay.length - 1];
+    const mostLoved = [...perPerson].filter(x => x.hearts > 0).sort((a, b) => b.hearts - a.hearts)[0];
+    const superlatives = [
+      earliest && { title: 'Early Bird', name: firstName(earliest.userId), detail: hourLabel(earliest) },
+      latest && latest !== earliest && { title: 'Night Owl', name: firstName(latest.userId), detail: hourLabel(latest) },
+      mostLoved && { title: 'Most Loved', name: mostLoved.user.name.split(' ')[0], detail: `${mostLoved.hearts} ❤️` },
+    ].filter((s): s is { title: string; name: string; detail: string } => !!s);
+
+    return { weekPhotos, days, hero, perPerson, busiestHourLabel, totalHearts, totalComments, rangeLabel, heartCount, quote, superlatives, firstName, hourLabel };
+  }, [showRecap, photos, activeUsers, users]);
 
   const handleSaveRecap = async () => {
     if (!recapRef.current) return;
@@ -2492,8 +2524,19 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Day by day */}
-                  <div className="space-y-6 mb-12">
+                  {/* Quote of the Week */}
+                  {recapData.quote && (
+                    <div className="text-center mb-12 px-4">
+                      <p className="font-sans text-[10px] uppercase tracking-[0.3em] text-gold mb-4">Quote of the Week</p>
+                      <p className="font-serif italic text-2xl leading-snug">&ldquo;{recapData.quote.text}&rdquo;</p>
+                      <p className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-50 mt-4">
+                        — {recapData.quote.author}, on {recapData.quote.on}&rsquo;s moment
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Day by day — each day leads with its best photo */}
+                  <div className="space-y-7 mb-12">
                     {recapData.days.map(day => (
                       <div key={day.label}>
                         <div className="flex items-baseline justify-between border-b-[0.5px] border-ink/20 pb-1 mb-3">
@@ -2502,23 +2545,55 @@ export default function App() {
                             {day.dayPhotos.length > 0 ? `${day.dayPhotos.length} moment${day.dayPhotos.length === 1 ? '' : 's'}` : 'quiet day'}
                           </span>
                         </div>
-                        {day.dayPhotos.length > 0 && (
-                          <div className="flex flex-wrap gap-1.5">
-                            {day.dayPhotos.map(p => (
-                              <div key={p.id} className="w-14 h-14 md:w-16 md:h-16 bg-card border-[0.5px] border-ink/20 p-0.5">
-                                <img
-                                  src={p.thumbUrl || p.imageUrl}
-                                  alt=""
-                                  crossOrigin="anonymous"
-                                  className="w-full h-full object-cover"
-                                />
+                        {day.featured && (
+                          <div className="flex gap-3 items-start">
+                            <div className="bg-card border-[0.5px] border-ink/20 p-1 w-36 md:w-44 shrink-0">
+                              <img
+                                src={day.featured.thumbUrl || day.featured.imageUrl}
+                                alt=""
+                                crossOrigin="anonymous"
+                                className="w-full aspect-square object-cover"
+                              />
+                              <p className="font-sans text-[8px] uppercase tracking-widest opacity-50 mt-1.5 mb-0.5 text-center">
+                                {recapData.firstName(day.featured.userId)} · {recapData.hourLabel(day.featured)}
+                                {recapData.heartCount(day.featured) > 0 && ` · ${recapData.heartCount(day.featured)} ❤️`}
+                              </p>
+                            </div>
+                            {day.rest.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5 min-w-0">
+                                {day.rest.map(p => (
+                                  <div key={p.id} className="w-14 h-14 md:w-16 md:h-16 bg-card border-[0.5px] border-ink/20 p-0.5">
+                                    <img
+                                      src={p.thumbUrl || p.imageUrl}
+                                      alt=""
+                                      crossOrigin="anonymous"
+                                      className="w-full h-full object-cover"
+                                    />
+                                  </div>
+                                ))}
                               </div>
-                            ))}
+                            )}
                           </div>
                         )}
                       </div>
                     ))}
                   </div>
+
+                  {/* Superlatives */}
+                  {recapData.superlatives.length > 0 && (
+                    <div className="mb-12">
+                      <p className="font-sans text-[10px] uppercase tracking-[0.3em] opacity-50 text-center mb-4">Honors of the Week</p>
+                      <div className={`grid text-center ${recapData.superlatives.length === 3 ? 'grid-cols-3' : recapData.superlatives.length === 2 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                        {recapData.superlatives.map((s, i) => (
+                          <div key={s.title} className={i > 0 ? 'border-l-[0.5px] border-ink/20' : ''}>
+                            <p className="font-sans text-[9px] uppercase tracking-[0.2em] text-gold mb-1">{s.title}</p>
+                            <p className="font-serif italic text-xl leading-tight">{s.name}</p>
+                            <p className="font-sans text-[9px] uppercase tracking-widest opacity-50 mt-1">{s.detail}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Contributors */}
                   <div className="mb-10">
