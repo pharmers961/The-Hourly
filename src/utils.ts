@@ -213,6 +213,21 @@ export function compressImage(file: File): Promise<string> {
   });
 }
 
+// "PDT", "EST", ... for the given IANA timezone (or the device's own when
+// omitted). Falls back to the raw offset (e.g. "GMT-7") where the runtime
+// has no abbreviation for the zone.
+export function timezoneAbbreviation(timeZone?: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZoneName: 'short',
+      ...(timeZone ? { timeZone } : {}),
+    }).formatToParts(new Date());
+    return parts.find(p => p.type === 'timeZoneName')?.value || 'LOCAL';
+  } catch {
+    return 'LOCAL';
+  }
+}
+
 export function getRelativeTime(timestamp: string): string {
   const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
   const timeMs = new Date(timestamp).getTime();

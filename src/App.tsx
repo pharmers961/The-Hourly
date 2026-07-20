@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon, Maximize, Clock, RefreshCw, Newspaper } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import { toJpeg } from 'html-to-image';
-import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImageToBlob, makeThumbnailBlob, getRelativeTime, extractExifGps } from './utils';
+import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImageToBlob, makeThumbnailBlob, getRelativeTime, extractExifGps, timezoneAbbreviation } from './utils';
 import { supabase, isSupabaseConfigured } from './supabase';
 import * as api from './api';
 import { Photo, User as AppUser, UserSettings, Group } from './types';
@@ -1427,7 +1427,7 @@ export default function App() {
             <span className="hidden print:inline">{selectedDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })} Chronicle</span>
             {isSelectedDateToday && (
               <span className="text-xs uppercase align-top ml-1 font-sans opacity-40 print:hidden">
-                {referenceTimezone ? referenceTimezone.split('/').pop()?.replace(/_/g, ' ') : (Intl.DateTimeFormat().resolvedOptions().timeZone.split('/').pop()?.replace(/_/g, ' ') || 'LOCAL')}
+                {timezoneAbbreviation(referenceTimezone || undefined)}
               </span>
             )}
           </div>
