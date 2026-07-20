@@ -679,45 +679,37 @@ drop policy if exists "push delete own" on public.push_subscriptions;
 create policy "push delete own" on public.push_subscriptions
   for delete to authenticated using (profile_id = public.my_profile_id());
 
--- Triggers = the same mechanism the dashboard's "Database Webhooks" UI
--- creates, just defined in SQL so no extra clicking is needed. Wrapped in
--- exception handlers in case the supabase_functions helper isn't available,
--- in which case create two webhooks by hand in the dashboard instead
--- (Database -> Webhooks: on INSERT into nudges and notifications, POST to
--- the send-push function URL).
-do $$
-begin
-  drop trigger if exists nudges_send_push on public.nudges;
-  create trigger nudges_send_push
-    after insert on public.nudges
-    for each row
-    execute function supabase_functions.http_request(
-      'https://hnuznphuqpencmrtfrzv.supabase.co/functions/v1/send-push',
-      'POST',
-      '{"Content-Type":"application/json"}',
-      '{}',
-      '5000'
-    );
-exception when others then
-  raise notice 'Could not create nudges push trigger (%). Create a Database Webhook in the dashboard instead.', sqlerrm;
-end $$;
+-- Hand each new nudge/notification row to the send-push Edge Function via
+-- pg_net (async HTTP from Postgres). pg_net is used instead of the
+-- supabase_functions webhook helper because the latter is provisioned
+-- lazily and doesn't exist on projects that never enabled dashboard
+-- webhooks (this one). SECURITY DEFINER because only elevated roles may
+-- call into the net schema — the inserting user can't.
+create extension if not exists pg_net;
 
-do $$
+create or replace function public.notify_send_push()
+returns trigger
+language plpgsql security definer set search_path = public
+as $$
 begin
-  drop trigger if exists notifications_send_push on public.notifications;
-  create trigger notifications_send_push
-    after insert on public.notifications
-    for each row
-    execute function supabase_functions.http_request(
-      'https://hnuznphuqpencmrtfrzv.supabase.co/functions/v1/send-push',
-      'POST',
-      '{"Content-Type":"application/json"}',
-      '{}',
-      '5000'
-    );
-exception when others then
-  raise notice 'Could not create notifications push trigger (%). Create a Database Webhook in the dashboard instead.', sqlerrm;
-end $$;
+  perform net.http_post(
+    url := 'https://hnuznphuqpencmrtfrzv.supabase.co/functions/v1/send-push',
+    headers := '{"Content-Type": "application/json"}'::jsonb,
+    body := jsonb_build_object('table', TG_TABLE_NAME, 'record', jsonb_build_object('id', NEW.id))
+  );
+  return NEW;
+end;
+$$;
+
+drop trigger if exists nudges_send_push on public.nudges;
+create trigger nudges_send_push
+  after insert on public.nudges
+  for each row execute function public.notify_send_push();
+
+drop trigger if exists notifications_send_push on public.notifications;
+create trigger notifications_send_push
+  after insert on public.notifications
+  for each row execute function public.notify_send_push();
 
 -- ---------------------------------------------------------------------------
 -- Realtime
