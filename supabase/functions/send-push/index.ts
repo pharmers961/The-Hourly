@@ -27,6 +27,27 @@ const supabase = createClient(
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 );
 
+// Quiet hours: no pushes between 10 PM and 8 AM in the recipient's own
+// timezone (mirrors the in-app rule in src/utils.ts).
+const QUIET_START = 22;
+const QUIET_END = 8;
+
+function inQuietHours(timeZone: string | null | undefined): boolean {
+  let hour: number;
+  try {
+    hour = Number(
+      new Intl.DateTimeFormat('en-US', {
+        hour: 'numeric',
+        hourCycle: 'h23',
+        timeZone: timeZone || 'UTC',
+      }).format(new Date())
+    );
+  } catch {
+    hour = new Date().getUTCHours();
+  }
+  return hour >= QUIET_START || hour < QUIET_END;
+}
+
 Deno.serve(async (req) => {
   let payload: { table?: string; record?: { id?: string } };
   try {
@@ -45,6 +66,9 @@ Deno.serve(async (req) => {
   let title: string;
   let body: string;
   let tag: string;
+  // Tapping the notification opens this path in the app — deep-links straight
+  // to the photo for likes/comments/mentions.
+  let url = '/';
 
   if (table === 'nudges') {
     const { data: row } = await supabase
@@ -67,11 +91,12 @@ Deno.serve(async (req) => {
   } else {
     const { data: row } = await supabase
       .from('notifications')
-      .select('to_profile_id, from_name, text, type')
+      .select('to_profile_id, from_name, text, type, photo_id')
       .eq('id', rowId)
       .maybeSingle();
     if (!row) return new Response('no row', { status: 200 });
     toProfileId = row.to_profile_id;
+    if (row.photo_id) url = `/?photo=${row.photo_id}`;
     title = 'The Hourly';
     if (row.type === 'like') {
       body = `${row.from_name} reacted ${row.text || '❤️'} to your photo`;
@@ -85,6 +110,15 @@ Deno.serve(async (req) => {
     }
   }
 
+  // Respect the recipient's night: their profile timezone decides whether
+  // this lands now or not at all (missed pings aren't re-sent later).
+  const { data: recipient } = await supabase
+    .from('profiles')
+    .select('timezone')
+    .eq('id', toProfileId)
+    .maybeSingle();
+  if (inQuietHours(recipient?.timezone)) return new Response('quiet hours', { status: 200 });
+
   const { data: subs } = await supabase
     .from('push_subscriptions')
     .select('endpoint, p256dh, auth')
@@ -92,7 +126,7 @@ Deno.serve(async (req) => {
 
   if (!subs || subs.length === 0) return new Response('no subscriptions', { status: 200 });
 
-  const message = JSON.stringify({ title, body, tag, url: '/' });
+  const message = JSON.stringify({ title, body, tag, url });
   const results = await Promise.allSettled(
     subs.map((s) =>
       webpush.sendNotification(

@@ -26,7 +26,15 @@ self.addEventListener('notificationclick', (event) => {
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
       for (const client of windowClients) {
-        if ('focus' in client) return client.focus();
+        if ('focus' in client) {
+          const focused = client.focus();
+          // Deep link (e.g. /?photo=<id>): steer the already-open app to the
+          // tapped photo instead of just focusing wherever it was.
+          if (url !== '/' && 'navigate' in client) {
+            return focused.then(() => client.navigate(url)).catch(() => undefined);
+          }
+          return focused;
+        }
       }
       return self.clients.openWindow(url);
     })

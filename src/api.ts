@@ -295,21 +295,32 @@ export async function fetchGroupData(groupId: string): Promise<AppData> {
   return { profiles, photos, memberIds };
 }
 
+// A retried queued upload re-sends the same storage path; "already there"
+// means the previous attempt got that far, which is success for this step.
+function isDuplicateUpload(err: unknown): boolean {
+  const anyErr = err as { statusCode?: string | number; message?: string } | null;
+  return anyErr?.statusCode === 409 || anyErr?.statusCode === '409' || /already exists|duplicate/i.test(anyErr?.message || '');
+}
+
 export async function uploadPhotoToGroups(
   profileId: string,
   imageBlob: Blob,
   thumbBlob: Blob | null,
   metadata: PhotoMetadata,
-  groupIds: string[]
+  groupIds: string[],
+  // takenAt: backfills the original capture time for offline-queued uploads.
+  // baseName: stable storage name so a retried queued upload doesn't orphan a
+  // file per attempt.
+  opts?: { takenAt?: string; baseName?: string }
 ): Promise<void> {
   if (groupIds.length === 0) throw new Error('Select at least one group to share this to.');
 
-  const baseName = crypto.randomUUID();
+  const baseName = opts?.baseName || crypto.randomUUID();
   const path = `${profileId}/${baseName}.jpg`;
   const { error: uploadError } = await supabase.storage.from('photos').upload(path, imageBlob, {
     contentType: 'image/jpeg',
   });
-  if (uploadError) throw describeError('storage upload failed', uploadError);
+  if (uploadError && !isDuplicateUpload(uploadError)) throw describeError('storage upload failed', uploadError);
 
   // Thumbnail is best-effort: the matrix falls back to the full image when
   // absent, so a thumb failure should never block the capture.
@@ -319,20 +330,41 @@ export async function uploadPhotoToGroups(
     const { error: thumbError } = await supabase.storage.from('photos').upload(candidate, thumbBlob, {
       contentType: 'image/jpeg',
     });
-    if (!thumbError) thumbPath = candidate;
+    if (!thumbError || isDuplicateUpload(thumbError)) thumbPath = candidate;
     else console.warn('Thumbnail upload failed:', thumbError);
   }
 
   // Insert + group-share happen server-side (create_photo RPC), which resolves
   // the profile from the session rather than trusting a client-passed id, and
   // bypasses RLS — so this can't fail with a photos RLS violation.
-  const { error } = await supabase.rpc('create_photo', {
+  const baseParams = {
     p_image_path: path,
     p_metadata: metadata,
     p_group_ids: groupIds,
     p_thumb_path: thumbPath,
-  });
-  if (error) throw describeError('photo insert failed', error);
+  };
+  const { error } = await supabase.rpc(
+    'create_photo',
+    opts?.takenAt ? { ...baseParams, p_taken_at: opts.takenAt } : baseParams
+  );
+  if (error) {
+    // Database not yet updated with the p_taken_at parameter: deliver the
+    // photo anyway at upload time rather than failing the queued capture.
+    if (opts?.takenAt && (error.code === 'PGRST202' || /p_taken_at/.test(error.message || ''))) {
+      const { error: retryError } = await supabase.rpc('create_photo', baseParams);
+      if (retryError) throw describeError('photo insert failed', retryError);
+      return;
+    }
+    throw describeError('photo insert failed', error);
+  }
+}
+
+// Whether this person has ever posted a photo at all — drives the first-run
+// onboarding prompt for freshly joined members.
+export async function hasEverCaptured(profileId: string): Promise<boolean> {
+  const { data, error } = await supabase.from('photos').select('id').eq('profile_id', profileId).limit(1);
+  if (error) throw error;
+  return (data || []).length > 0;
 }
 
 export async function addComment(photoId: string, profileId: string, text: string): Promise<void> {

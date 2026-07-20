@@ -213,6 +213,31 @@ export function compressImage(file: File): Promise<string> {
   });
 }
 
+// Quiet hours: nothing pings between 10 PM and 8 AM in the recipient's own
+// timezone. Mirrored server-side in the send-push Edge Function so pushes to
+// a closed app respect the same window.
+export const QUIET_HOURS = { start: 22, end: 8 };
+
+export function hourInTimeZone(timeZone?: string): number {
+  try {
+    // hourCycle h23 avoids the engines that render midnight as "24"
+    return Number(
+      new Intl.DateTimeFormat('en-US', {
+        hour: 'numeric',
+        hourCycle: 'h23',
+        ...(timeZone ? { timeZone } : {}),
+      }).format(new Date())
+    );
+  } catch {
+    return new Date().getHours();
+  }
+}
+
+export function isQuietHours(timeZone?: string): boolean {
+  const hour = hourInTimeZone(timeZone);
+  return hour >= QUIET_HOURS.start || hour < QUIET_HOURS.end;
+}
+
 // "PDT", "EST", ... for the given IANA timezone (or the device's own when
 // omitted). Falls back to the raw offset (e.g. "GMT-7") where the runtime
 // has no abbreviation for the zone.

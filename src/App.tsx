@@ -1,8 +1,9 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon, Maximize, Clock, RefreshCw, Newspaper } from 'lucide-react';
+import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon, Maximize, Clock, RefreshCw, Newspaper, History } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import { toJpeg } from 'html-to-image';
-import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImageToBlob, makeThumbnailBlob, getRelativeTime, extractExifGps, timezoneAbbreviation } from './utils';
+import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImageToBlob, makeThumbnailBlob, getRelativeTime, extractExifGps, timezoneAbbreviation, isQuietHours } from './utils';
+import { saveQueuedCapture, listQueuedCaptures, removeQueuedCapture, looksOffline, PendingCapture } from './offlineQueue';
 import { supabase, isSupabaseConfigured } from './supabase';
 import * as api from './api';
 import { Photo, User as AppUser, UserSettings, Group } from './types';
@@ -86,6 +87,14 @@ export default function App() {
   // is currently selected, since one capture is shared to chosen groups.
   const [hasPostedThisHour, setHasPostedThisHour] = useState(false);
 
+  // First-run onboarding: shown until the person posts their very first
+  // photo (or dismisses it). null = not yet checked.
+  const [hasEverPosted, setHasEverPosted] = useState<boolean | null>(null);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(() => !!localStorage.getItem('onboardingDismissed'));
+
+  // "On this day" memories banner — dismissable once per day
+  const [memoriesDismissedDay, setMemoriesDismissedDay] = useState<string | null>(() => localStorage.getItem('memoriesDismissedDay'));
+
   const showToast = (message: string, type: 'error' | 'success' = 'error') => {
     const id = Date.now() + Math.random();
     setToasts(prev => [...prev, { id, message, type }]);
@@ -139,7 +148,6 @@ export default function App() {
 
   const initialPhotoLoaded = useRef(false);
   const photoEntryPushed = useRef(false);
-  const lastNotifiedHour = useRef<number | null>(null);
   const knownPhotoIds = useRef<Set<string> | null>(null);
   const usersRef = useRef<Record<string, AppUser>>({});
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
@@ -210,6 +218,16 @@ export default function App() {
       api.registerPushSubscription(profile.id);
     }
     api.clearMyPendingPings(profile.id);
+  }, [profile?.id]);
+
+  useEffect(() => {
+    if (!profile) {
+      setHasEverPosted(null);
+      return;
+    }
+    api.hasEverCaptured(profile.id)
+      .then(setHasEverPosted)
+      .catch(err => console.warn('Failed to check first-capture status:', err));
   }, [profile?.id]);
 
   // Heartbeat: lastActive is otherwise only written at login, so without this
@@ -313,6 +331,63 @@ export default function App() {
     }
   }, [profile?.id]);
 
+  // Offline capture queue: push any parked captures up whenever we're signed
+  // in with a connection — on load, when connectivity returns, and when the
+  // app comes back to the foreground.
+  const drainInFlight = useRef(false);
+  const drainOfflineQueue = useCallback(async () => {
+    if (!profile || !navigator.onLine || drainInFlight.current) return;
+    drainInFlight.current = true;
+    let uploaded = 0;
+    try {
+      const pending = await listQueuedCaptures().catch(() => [] as PendingCapture[]);
+      for (const item of pending) {
+        try {
+          await api.uploadPhotoToGroups(profile.id, item.imageBlob, item.thumbBlob, item.metadata, item.groupIds, {
+            takenAt: item.takenAt,
+            baseName: item.id,
+          });
+          await removeQueuedCapture(item.id);
+          uploaded++;
+        } catch (err) {
+          if (looksOffline(err)) break; // connection dropped again — retry on the next trigger
+          // A real rejection (not connectivity): retry a few times across
+          // triggers, then give up so the queue can't wedge forever.
+          const attempts = (item.attempts || 0) + 1;
+          if (attempts >= 6) {
+            await removeQueuedCapture(item.id).catch(() => undefined);
+            console.error('Dropping queued photo after repeated failures:', err);
+            showToast(`A queued photo could not be uploaded and was removed${errDetail(err)}`);
+          } else {
+            await saveQueuedCapture({ ...item, attempts }).catch(() => undefined);
+          }
+        }
+      }
+    } finally {
+      drainInFlight.current = false;
+    }
+    if (uploaded > 0) {
+      showToast(`Uploaded ${uploaded} queued photo${uploaded === 1 ? '' : 's'}`, 'success');
+      refreshData();
+      refreshHasPostedThisHour();
+    }
+  }, [profile?.id, refreshData, refreshHasPostedThisHour]);
+
+  useEffect(() => {
+    if (!profile) return;
+    drainOfflineQueue();
+    const onOnline = () => drainOfflineQueue();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') drainOfflineQueue();
+    };
+    window.addEventListener('online', onOnline);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [profile?.id, drainOfflineQueue]);
+
   // Persist the last-viewed group across reloads
   useEffect(() => {
     if (selectedGroupId) localStorage.setItem('selectedGroupId', selectedGroupId);
@@ -378,11 +453,13 @@ export default function App() {
         refreshGroups();
       },
       onNudge: (fromProfileId) => {
+        if (isQuietHours()) return; // 10 PM – 8 AM: let people sleep
         if (usersRef.current[profile.id]?.settings?.notifyReminders === false) return;
         const fromName = usersRef.current[fromProfileId]?.name.split(' ')[0] || 'Someone';
         showLocalNotification('The Hourly: Nudge!', `${fromName} nudged you to capture your moment!`);
       },
       onNotification: (n) => {
+        if (isQuietHours()) return; // 10 PM – 8 AM: let people sleep
         const mySettings = usersRef.current[profile.id]?.settings;
         if (n.type === 'like') {
           if (mySettings?.notifyLikes === false) return;
@@ -591,6 +668,33 @@ export default function App() {
 
   const isSelectedDateToday = selectedDate.toDateString() === new Date().toDateString();
 
+  // "On this day": resurface the group's photos from this date in a past
+  // year, or — while the archive is young — from exactly a month or a week
+  // ago. The most distant anniversary wins.
+  const memories = useMemo(() => {
+    if (photos.length === 0) return null;
+    const today = new Date();
+    const candidates: { label: string; date: Date }[] = [];
+    for (let y = 5; y >= 1; y--) {
+      candidates.push({
+        label: y === 1 ? 'One year ago today' : `${y} years ago today`,
+        date: new Date(today.getFullYear() - y, today.getMonth(), today.getDate()),
+      });
+    }
+    candidates.push({ label: 'One month ago today', date: new Date(today.getFullYear(), today.getMonth() - 1, today.getDate()) });
+    candidates.push({ label: 'One week ago today', date: new Date(today.getFullYear(), today.getMonth(), today.getDate() - 7) });
+
+    for (const c of candidates) {
+      const dayPhotos = photos
+        .filter(p => new Date(p.timestamp).toDateString() === c.date.toDateString())
+        .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+      if (dayPhotos.length > 0) return { label: c.label, photos: dayPhotos };
+    }
+    return null;
+  }, [photos]);
+  const todayKey = currentTime.toDateString();
+  const showMemories = !!user && !!memories && isSelectedDateToday && memoriesDismissedDay !== todayKey;
+
   const displayedSlots = useMemo(() => {
     return timeSlots.filter(slot => {
       if (isSelectedDateToday) return true;
@@ -754,6 +858,65 @@ export default function App() {
     });
   }, [currentTime, timeSlots, dismissedNudgeHour, activeUsers, user?.uid]);
 
+  // The hour this person usually posts at — the mode of their own photo
+  // history in the current group. Needs a little history to mean anything.
+  const typicalPostHour = useMemo(() => {
+    if (!profile) return null;
+    const counts: Record<number, number> = {};
+    let total = 0;
+    photos.forEach(p => {
+      if (p.userId !== profile.id) return;
+      const h = new Date(p.timestamp).getHours();
+      counts[h] = (counts[h] || 0) + 1;
+      total++;
+    });
+    if (total < 3) return null;
+    return Number(Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0]);
+  }, [photos, profile?.id]);
+  const typicalPostHourRef = useRef<number | null>(null);
+  useEffect(() => {
+    typicalPostHourRef.current = typicalPostHour;
+  }, [typicalPostHour]);
+
+  // Smart daily reminder (replaces the old every-hour chime): at most one
+  // nudge per day, around the hour this person usually posts (5 PM when
+  // there isn't enough history yet), only if nothing was posted today, and
+  // never during quiet hours.
+  const reminderCheckInFlight = useRef(false);
+  const maybeSendDailyReminder = async (now: Date) => {
+    const myId = profile?.id;
+    if (!myId || reminderCheckInFlight.current) return;
+    if (usersRef.current[myId]?.settings?.notifyReminders === false) return;
+    if (isQuietHours()) return;
+    const dayKey = now.toDateString();
+    if (localStorage.getItem('dailyReminderDay') === dayKey) return;
+    if (now.getHours() < (typicalPostHourRef.current ?? 17)) return;
+
+    reminderCheckInFlight.current = true;
+    try {
+      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+      const postedToday = await api.hasCapturedThisHour(myId, startOfDay);
+      // Either way, today is settled: they've posted, or they get one reminder
+      localStorage.setItem('dailyReminderDay', dayKey);
+      if (!postedToday) {
+        const usualLabel =
+          typicalPostHourRef.current !== null
+            ? new Date(2000, 0, 1, typicalPostHourRef.current).toLocaleTimeString('en-US', { hour: 'numeric', hour12: true })
+            : null;
+        showLocalNotification(
+          'The Hourly',
+          usualLabel
+            ? `You usually post around ${usualLabel} — nothing chronicled yet today.`
+            : 'Nothing chronicled yet today — capture a moment before the day slips away.'
+        );
+      }
+    } catch (err) {
+      console.warn('Daily reminder check failed:', err); // retried next minute
+    } finally {
+      reminderCheckInFlight.current = false;
+    }
+  };
+
   useEffect(() => {
     const timer = setInterval(() => {
       const now = new Date();
@@ -765,14 +928,7 @@ export default function App() {
       });
 
       if (notificationPermission === 'granted') {
-        const currentHour = now.getHours();
-        const myId = profile?.id;
-        const remindersOff = !!myId && usersRef.current[myId]?.settings?.notifyReminders === false;
-        // Notify at top of the hour (minute 0)
-        if (now.getMinutes() === 0 && lastNotifiedHour.current !== currentHour && !remindersOff) {
-          showLocalNotification('The Hourly', 'A new hour has begun. Time to chronicle your moment.');
-          lastNotifiedHour.current = currentHour;
-        }
+        void maybeSendDailyReminder(now);
       }
     }, 60000);
     return () => clearInterval(timer);
@@ -823,8 +979,15 @@ export default function App() {
 
     try {
       const currentHourKey = new Date(currentTime.getFullYear(), currentTime.getMonth(), currentTime.getDate(), currentTime.getHours()).toISOString();
-      // Skip anyone who turned reminder notifications off
-      await api.sendNudges(user.uid, missedSiblings.filter(s => s.settings?.notifyReminders !== false).map(s => s.id), currentHourKey);
+      // Skip anyone who turned reminder notifications off, and anyone whose
+      // own clock says it's the middle of the night
+      await api.sendNudges(
+        user.uid,
+        missedSiblings
+          .filter(s => s.settings?.notifyReminders !== false && !isQuietHours(s.timezone))
+          .map(s => s.id),
+        currentHourKey
+      );
       showToast('Nudge sent', 'success');
     } catch (err) {
       console.error('Failed to send nudges:', err);
@@ -852,6 +1015,7 @@ export default function App() {
     }
     setIsCapturing(true);
     try {
+      const takenAt = new Date().toISOString();
       const imageBlob = await compressImageToBlob(file);
       const thumbBlob = await makeThumbnailBlob(file).catch(() => null);
       const userDisplayLocation = activeUsers.find(u => u.id === profileId)?.settings?.displayLocation;
@@ -860,8 +1024,20 @@ export default function App() {
       const exifCoords = await extractExifGps(file);
       const metadata = await fetchEnvironmentalMetadata(userDisplayLocation || undefined, exifCoords || undefined);
 
-      await api.uploadPhotoToGroups(profileId, imageBlob, thumbBlob, metadata, groupIds);
+      try {
+        await api.uploadPhotoToGroups(profileId, imageBlob, thumbBlob, metadata, groupIds);
+      } catch (err) {
+        if (!looksOffline(err)) throw err;
+        // No connection: park the finished capture and let the retry loop
+        // deliver it (with its original capture time) when we're back online
+        await saveQueuedCapture({ id: crypto.randomUUID(), imageBlob, thumbBlob, metadata, groupIds, takenAt, attempts: 0 });
+        setHasPostedThisHour(true);
+        setHasEverPosted(true);
+        showToast("You're offline — moment saved, it will upload automatically", 'success');
+        return;
+      }
       setHasPostedThisHour(true);
+      setHasEverPosted(true);
       await refreshData();
       showToast('Moment captured', 'success');
     } catch (err) {
@@ -1450,6 +1626,35 @@ export default function App() {
         </div>
       )}
 
+      {/* "On this day" memories strip */}
+      {showMemories && memories && (
+        <div className="flex items-center gap-3 bg-paper-warm border-b-[0.5px] border-ink/15 px-4 md:px-10 py-2 shrink-0 print:hidden">
+          <History size={14} className="text-gold shrink-0" strokeWidth={1.5} />
+          <span className="font-sans text-[9px] md:text-[10px] uppercase tracking-[0.2em] opacity-60 shrink-0 whitespace-nowrap">
+            {memories.label}
+          </span>
+          <div className="flex gap-1.5 overflow-x-auto min-w-0">
+            {memories.photos.map(p => (
+              <button
+                key={p.id}
+                onClick={() => setSelectedPhoto(p)}
+                className="w-10 h-10 shrink-0 bg-card border-[0.5px] border-ink/20 p-0.5 hover:border-gold transition-colors"
+                aria-label="Open memory"
+              >
+                <img src={p.thumbUrl || p.imageUrl} alt="" className="w-full h-full object-cover" />
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={() => { localStorage.setItem('memoriesDismissedDay', todayKey); setMemoriesDismissedDay(todayKey); }}
+            className="ml-auto p-1.5 opacity-50 hover:opacity-100 transition-opacity shrink-0"
+            aria-label="Dismiss memories"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
       {/* Main Matrix View */}
       <main className="flex-grow overflow-auto relative print:overflow-visible">
         {groupsLoaded && groups.length === 0 ? (
@@ -1584,6 +1789,29 @@ export default function App() {
         </div>
         )}
       </main>
+
+      {/* First-capture onboarding: greets new members until they post once */}
+      {user && groupsLoaded && groups.length > 0 && hasEverPosted === false && !onboardingDismissed &&
+        !hasPostedThisHour && !selectedPhoto && !showSettings && !showRecap && !pendingCaptureFile && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 print:hidden animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <div className="relative bg-ink text-paper shadow-2xl px-5 py-4 pr-8 max-w-[300px] text-center">
+            <button
+              onClick={() => { localStorage.setItem('onboardingDismissed', '1'); setOnboardingDismissed(true); }}
+              className="absolute top-2 right-2 p-1 opacity-50 hover:opacity-100 transition-opacity"
+              aria-label="Dismiss welcome"
+            >
+              <X size={12} />
+            </button>
+            <p className="font-serif italic text-lg leading-snug mb-1.5">
+              Welcome{selectedGroup ? ` to ${selectedGroup.name}` : ''}
+            </p>
+            <p className="font-sans text-[10px] uppercase tracking-[0.15em] opacity-70 leading-relaxed">
+              Once an hour, share a photo of whatever you're up to — everyone sees it instantly. Capture your first hourly below.
+            </p>
+            <div className="absolute left-1/2 -translate-x-1/2 -bottom-1.5 w-3 h-3 bg-ink rotate-45" />
+          </div>
+        </div>
+      )}
 
       {/* Floating Action Button */}
       {user && !hasPostedThisHour && groups.length > 0 && (
@@ -2476,9 +2704,12 @@ export default function App() {
                           checked={users[user.uid]?.settings?.notifyReminders !== false}
                           onChange={(e) => handleSaveSettings({ notifyReminders: e.target.checked })}
                         />
-                        Reminders to post (nudges &amp; new hour)
+                        Reminders to post (nudges &amp; daily reminder)
                       </label>
                     </div>
+                    <p className="font-sans text-[9px] uppercase tracking-widest opacity-40 leading-relaxed mt-1">
+                      Quiet hours: nothing pings between 10 PM and 8 AM, in each person's own timezone.
+                    </p>
                   </div>
                 </div>
               </div>

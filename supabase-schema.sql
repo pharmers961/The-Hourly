@@ -208,16 +208,21 @@ $$;
 -- happens when the client's idea of its own profile id drifts from the
 -- session's. Also self-heals a stale auth_id link (e.g. signing in with a
 -- different provider than last time) by re-matching on the verified email.
--- Dropped explicitly because adding the thumb parameter changes the
--- signature, which would otherwise leave the old version behind as an
--- ambiguous overload.
+-- Dropped explicitly because adding parameters changes the signature, which
+-- would otherwise leave old versions behind as ambiguous overloads.
 drop function if exists public.create_photo(text, jsonb, uuid[]);
+drop function if exists public.create_photo(text, jsonb, uuid[], text);
 
+-- p_taken_at: the offline capture queue uploads photos after the fact and
+-- passes the original capture time so the photo lands in the hour it was
+-- actually taken. Clamped to the recent past so a client can't post into the
+-- future or rewrite ancient history.
 create or replace function public.create_photo(
   p_image_path text,
   p_metadata jsonb,
   p_group_ids uuid[],
-  p_thumb_path text default null
+  p_thumb_path text default null,
+  p_taken_at timestamptz default null
 )
 returns uuid
 language plpgsql security definer set search_path = public
@@ -227,7 +232,12 @@ declare
   v_profile_id uuid;
   v_photo_id uuid;
   v_gid uuid;
+  v_taken_at timestamptz := least(coalesce(p_taken_at, now()), now());
 begin
+  if v_taken_at < now() - interval '7 days' then
+    v_taken_at := now() - interval '7 days';
+  end if;
+
   if auth.uid() is null then
     raise exception 'Not signed in. Please sign out and back in.';
   end if;
@@ -249,7 +259,7 @@ begin
   end if;
 
   insert into photos (profile_id, taken_at, image_path, thumb_path, metadata)
-  values (v_profile_id, now(), p_image_path, p_thumb_path, p_metadata)
+  values (v_profile_id, v_taken_at, p_image_path, p_thumb_path, p_metadata)
   returning id into v_photo_id;
 
   if p_group_ids is not null then
