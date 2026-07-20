@@ -43,10 +43,14 @@ create table if not exists public.photos (
   profile_id uuid not null references public.profiles(id) on delete cascade,
   taken_at timestamptz not null default now(),
   image_path text not null,
+  thumb_path text,
   metadata jsonb,
   firebase_id text unique,
   created_at timestamptz not null default now()
 );
+
+-- Migration for databases created before thumbnails existed
+alter table public.photos add column if not exists thumb_path text;
 
 -- Which group(s) a photo has been shared into. A photo is captured once and
 -- can be shared into any number of groups the uploader belongs to.
@@ -204,10 +208,16 @@ $$;
 -- happens when the client's idea of its own profile id drifts from the
 -- session's. Also self-heals a stale auth_id link (e.g. signing in with a
 -- different provider than last time) by re-matching on the verified email.
+-- Dropped explicitly because adding the thumb parameter changes the
+-- signature, which would otherwise leave the old version behind as an
+-- ambiguous overload.
+drop function if exists public.create_photo(text, jsonb, uuid[]);
+
 create or replace function public.create_photo(
   p_image_path text,
   p_metadata jsonb,
-  p_group_ids uuid[]
+  p_group_ids uuid[],
+  p_thumb_path text default null
 )
 returns uuid
 language plpgsql security definer set search_path = public
@@ -238,8 +248,8 @@ begin
     raise exception 'No profile found for this account. Please sign out and back in.';
   end if;
 
-  insert into photos (profile_id, taken_at, image_path, metadata)
-  values (v_profile_id, now(), p_image_path, p_metadata)
+  insert into photos (profile_id, taken_at, image_path, thumb_path, metadata)
+  values (v_profile_id, now(), p_image_path, p_thumb_path, p_metadata)
   returning id into v_photo_id;
 
   if p_group_ids is not null then

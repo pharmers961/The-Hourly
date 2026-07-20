@@ -149,6 +149,33 @@ export function compressImageToBlob(file: File): Promise<Blob> {
   return compressImage(file).then(dataUrl => fetch(dataUrl).then(r => r.blob()));
 }
 
+// Small square-ish thumbnail for matrix tiles, so the grid doesn't download
+// full-resolution photos to render at ~150px.
+export function makeThumbnailBlob(file: File, maxDim: number = 360): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target?.result as string;
+      img.onload = () => {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext('2d')?.drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(
+          (blob) => (blob ? resolve(blob) : reject(new Error('thumbnail encoding failed'))),
+          'image/jpeg',
+          0.7
+        );
+      };
+      img.onerror = (error) => reject(error);
+    };
+    reader.onerror = (error) => reject(error);
+  });
+}
+
 export function compressImage(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

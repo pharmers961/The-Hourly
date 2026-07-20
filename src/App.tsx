@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon, Maximize, Clock, RefreshCw } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import html2canvas from 'html2canvas';
-import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImageToBlob, getRelativeTime, extractExifGps } from './utils';
+import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImageToBlob, makeThumbnailBlob, getRelativeTime, extractExifGps } from './utils';
 import { supabase, isSupabaseConfigured } from './supabase';
 import * as api from './api';
 import { Photo, User as AppUser, UserSettings, Group } from './types';
@@ -27,6 +27,7 @@ export default function App() {
   const [dismissedNudgeHour, setDismissedNudgeHour] = useState<string | null>(null);
   const [commentText, setCommentText] = useState('');
   const [showSettings, setShowSettings] = useState(false);
+  const [openSettingsSection, setOpenSettingsSection] = useState<string>('profile');
   const [localLocationInput, setLocalLocationInput] = useState('');
   const [localNameInput, setLocalNameInput] = useState('');
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
@@ -50,6 +51,30 @@ export default function App() {
   // Multi-group capture picker
   const [pendingCaptureFile, setPendingCaptureFile] = useState<File | null>(null);
   const [captureGroupIds, setCaptureGroupIds] = useState<Set<string>>(new Set());
+
+  // Preview of the photo about to be shared, shown in the group picker
+  const pendingPreviewUrl = useMemo(
+    () => (pendingCaptureFile ? URL.createObjectURL(pendingCaptureFile) : null),
+    [pendingCaptureFile]
+  );
+  useEffect(() => {
+    return () => {
+      if (pendingPreviewUrl) URL.revokeObjectURL(pendingPreviewUrl);
+    };
+  }, [pendingPreviewUrl]);
+
+  // iPhones only deliver web push when the app is installed to the home
+  // screen — surface that once to iOS users browsing in a plain tab.
+  const [showIosHint, setShowIosHint] = useState(false);
+  useEffect(() => {
+    const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    const isStandalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      (navigator as unknown as { standalone?: boolean }).standalone === true;
+    if (isIos && !isStandalone && !localStorage.getItem('iosHintDismissed')) {
+      setShowIosHint(true);
+    }
+  }, []);
 
   // Whether the user has captured a photo in the current real-world hour —
   // tracked globally (across all their groups), independent of which group
@@ -234,11 +259,16 @@ export default function App() {
           }, 5000); // Pulse for 5 seconds
         }
       } else {
-        // First load: honor a shared ?photo= deep link
+        // First load: honor a shared ?photo= deep link, otherwise land the
+        // view on the current hour — that row is the whole point of the app
         const pId = new URLSearchParams(window.location.search).get('photo');
         if (pId) {
           const p = data.photos.find(x => x.id === pId);
           if (p) setSelectedPhoto(p);
+        } else {
+          setTimeout(() => {
+            document.getElementById('current-hour-slot')?.scrollIntoView({ block: 'center' });
+          }, 150);
         }
         initialPhotoLoaded.current = true;
       }
@@ -732,13 +762,14 @@ export default function App() {
     setIsCapturing(true);
     try {
       const imageBlob = await compressImageToBlob(file);
+      const thumbBlob = await makeThumbnailBlob(file).catch(() => null);
       const userDisplayLocation = activeUsers.find(u => u.id === profileId)?.settings?.displayLocation;
       // Prefer the GPS coordinates embedded in the photo itself; fall back to
       // the device's current position inside fetchEnvironmentalMetadata.
       const exifCoords = await extractExifGps(file);
       const metadata = await fetchEnvironmentalMetadata(userDisplayLocation || undefined, exifCoords || undefined);
 
-      await api.uploadPhotoToGroups(profileId, imageBlob, metadata, groupIds);
+      await api.uploadPhotoToGroups(profileId, imageBlob, thumbBlob, metadata, groupIds);
       setHasPostedThisHour(true);
       await refreshData();
       showToast('Moment captured', 'success');
@@ -763,9 +794,10 @@ export default function App() {
       return;
     }
 
-    // Multiple groups: let the user choose before uploading
+    // Multiple groups: let the user choose before uploading — everything
+    // starts checked, unticking is the exception
     setPendingCaptureFile(file);
-    setCaptureGroupIds(new Set(selectedGroupId ? [selectedGroupId] : []));
+    setCaptureGroupIds(new Set(groups.map(g => g.id)));
   };
 
   const handleConfirmCaptureGroups = () => {
@@ -1228,7 +1260,7 @@ export default function App() {
   };
 
   return (
-    <div className="h-screen bg-[#F9F8F5] text-[#1A1A1A] font-serif flex flex-col selection:bg-[#1A1A1A] selection:text-[#F9F8F5] overflow-hidden print:overflow-visible print:bg-white print:h-auto">
+    <div className={`h-screen bg-[#F9F8F5] text-[#1A1A1A] font-serif flex flex-col selection:bg-[#1A1A1A] selection:text-[#F9F8F5] overflow-hidden print:overflow-visible print:bg-white print:h-auto ${users[user?.uid ?? '']?.settings?.theme === 'dark' ? 'theme-dark' : ''}`}>
       {/* Top Right Settings Button */}
       {!isAuthLoading && user && (
         <button 
@@ -1297,6 +1329,22 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {/* iOS install hint: without home-screen install, iPhones get no push */}
+      {showIosHint && (
+        <div className="flex items-center justify-between gap-3 bg-[#C5A059]/15 border-b-[0.5px] border-[#C5A059]/40 px-4 md:px-10 py-2.5 shrink-0 print:hidden">
+          <span className="font-sans text-[11px] leading-snug">
+            Get nudges on your iPhone: tap <span className="font-medium">Share</span> → <span className="font-medium">Add to Home Screen</span>, then open The Hourly from the icon.
+          </span>
+          <button
+            onClick={() => { localStorage.setItem('iosHintDismissed', '1'); setShowIosHint(false); }}
+            className="p-1.5 opacity-60 hover:opacity-100 transition-opacity shrink-0"
+            aria-label="Dismiss"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {/* Main Matrix View */}
       <main className="flex-grow overflow-auto relative print:overflow-visible">
@@ -1395,7 +1443,7 @@ export default function App() {
                                 <div className="absolute inset-0 bg-[#EAE8E4] animate-pulse print:hidden" />
                               )}
                               <img
-                                src={photo.imageUrl}
+                                src={photo.thumbUrl || photo.imageUrl}
                                 alt={`${sibling.name}'s photo at ${slot.displayTime}`}
                                 onLoad={() => setLoadedImages(prev => new Set(prev).add(photo.id))}
                                 className={`absolute inset-0 w-full h-full object-cover transition-all duration-700 print:opacity-100 ${loadedImages.has(photo.id) ? 'opacity-100' : 'opacity-0'}`}
@@ -1412,12 +1460,12 @@ export default function App() {
                             </div>
                           </div>
                         ) : (
-                          <div 
-                            className={`h-full flex flex-col items-center justify-center transition-colors duration-500 print:bg-transparent print:border print:border-dashed print:border-black/20 ${isCurrent ? 'border-[0.5px] border-dashed border-[#C5A059]' : 'bg-[#1A1A1A]'} ${isCurrent && isNudging ? 'bg-[#C5A059] bg-opacity-20 animate-pulse print:animate-none print:bg-transparent' : ''} ${(isCurrent && sibling.id === user?.uid) ? 'cursor-pointer hover:bg-[#C5A059] hover:bg-opacity-10' : ''}`}
+                          <div
+                            className={`h-full flex flex-col items-center justify-center transition-colors duration-500 print:bg-transparent print:border print:border-dashed print:border-black/20 ${isCurrent ? 'border-[0.5px] border-dashed border-[#C5A059]' : 'border-[0.5px] border-dashed border-[#1A1A1A]/15'} ${isCurrent && isNudging ? 'bg-[#C5A059] bg-opacity-20 animate-pulse print:animate-none print:bg-transparent' : ''} ${(isCurrent && sibling.id === user?.uid) ? 'cursor-pointer hover:bg-[#C5A059] hover:bg-opacity-10' : ''}`}
                             onClick={() => { if (isCurrent && sibling.id === user?.uid) handleCaptureClick(); }}
                           >
                             {isCurrent && sibling.id === user?.uid && <Camera size={20} strokeWidth={1.5} className="text-[#C5A059] mb-1 md:mb-2 opacity-60" />}
-                            <span className={`font-sans text-[8px] md:text-[9px] uppercase tracking-widest transition-colors duration-500 text-center print:text-black/40 ${isCurrent ? 'text-[#C5A059]' : 'text-[#F9F8F5]'} ${isCurrent && isNudging ? 'opacity-100 font-bold' : 'opacity-60'}`}>
+                            <span className={`font-sans text-[8px] md:text-[9px] uppercase tracking-widest transition-colors duration-500 text-center print:text-black/40 ${isCurrent ? 'text-[#C5A059] opacity-60' : 'text-[#1A1A1A] opacity-25'} ${isCurrent && isNudging ? 'opacity-100 font-bold' : ''}`}>
                               {isCurrent && sibling.id === user?.uid ? 'Upload' : (isCurrent && isNudging ? 'Nudged!' : (isCurrent ? 'Pending' : 'Missed'))}
                             </span>
                           </div>
@@ -1711,8 +1759,8 @@ export default function App() {
                 </div>
                 
                 <form onSubmit={handleAddComment} className="flex gap-2 w-full">
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     value={commentText}
                     onChange={(e) => setCommentText(e.target.value)}
                     placeholder="Add a comment..."
@@ -1722,6 +1770,25 @@ export default function App() {
                     Post
                   </button>
                 </form>
+
+                {/* Tap-to-mention: typing @Name exactly is fragile on phones */}
+                {activeUsers.filter(u => u.id !== user?.uid).length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    {activeUsers.filter(u => u.id !== user?.uid).map(u => {
+                      const first = u.name.split(' ')[0];
+                      return (
+                        <button
+                          key={u.id}
+                          type="button"
+                          onClick={() => setCommentText(prev => `${prev}${prev && !prev.endsWith(' ') ? ' ' : ''}@${first} `)}
+                          className="font-sans text-[10px] px-2.5 py-1 border-[0.5px] border-[#1A1A1A] border-opacity-30 rounded-full opacity-50 hover:opacity-100 transition-opacity"
+                        >
+                          @{first}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1748,7 +1815,12 @@ export default function App() {
         <div className="fixed inset-0 z-[250] bg-black/40 flex items-center justify-center p-4">
           <div className="bg-[#F9F8F5] p-6 md:p-8 w-full max-w-sm shadow-2xl border-[0.5px] border-[#1A1A1A] animate-in fade-in zoom-in-95 duration-200">
             <h2 className="font-serif text-xl italic mb-1">Share to</h2>
-            <p className="font-sans text-[10px] uppercase tracking-widest opacity-50 mb-6">Choose which group(s) see this moment</p>
+            <p className="font-sans text-[10px] uppercase tracking-widest opacity-50 mb-4">Choose which group(s) see this moment</p>
+            {pendingPreviewUrl && (
+              <div className="mb-5 bg-white border-[0.5px] border-[#1A1A1A] border-opacity-20 p-1 w-28 h-28 mx-auto">
+                <img src={pendingPreviewUrl} alt="Photo to share" className="w-full h-full object-cover" />
+              </div>
+            )}
             <div className="flex flex-col gap-3 mb-8">
               {groups.map(g => (
                 <label key={g.id} className="flex items-center gap-3 cursor-pointer font-sans text-sm">
@@ -1834,9 +1906,19 @@ export default function App() {
             >
               <X size={20} />
             </button>
-            <h2 className="font-serif text-2xl italic mb-8">Settings</h2>
+            <h2 className="font-serif text-2xl italic mb-6">Settings</h2>
 
-            <div className="space-y-6">
+            <div className="space-y-1">
+              {/* ---- Profile ---- */}
+              <button
+                onClick={() => setOpenSettingsSection(prev => (prev === 'profile' ? '' : 'profile'))}
+                className="w-full flex items-center justify-between py-3 border-b-[0.5px] border-[#1A1A1A]/20"
+              >
+                <span className="font-sans text-[11px] uppercase tracking-[0.2em]">Profile &amp; Display</span>
+                <ChevronRight size={14} className={`opacity-50 transition-transform ${openSettingsSection === 'profile' ? 'rotate-90' : ''}`} />
+              </button>
+              {openSettingsSection === 'profile' && (
+              <div className="space-y-6 py-4">
               <div className="flex flex-col gap-2">
                 <label className="font-sans text-[10px] uppercase tracking-widest opacity-60">Display Name</label>
                 <input
@@ -1859,6 +1941,32 @@ export default function App() {
                   placeholder="e.g. San Francisco"
                   className="bg-transparent border-b-[0.5px] border-[#1A1A1A] px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors placeholder:opacity-30"
                 />
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <label className="font-sans text-[10px] uppercase tracking-widest opacity-60">Appearance</label>
+                <div className="flex gap-4 font-sans text-sm">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="theme"
+                      value="light"
+                      checked={users[user.uid]?.settings?.theme !== 'dark'}
+                      onChange={(e) => e.target.checked && handleSaveSettings({ theme: 'light' })}
+                    />
+                    Light
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="theme"
+                      value="dark"
+                      checked={users[user.uid]?.settings?.theme === 'dark'}
+                      onChange={(e) => e.target.checked && handleSaveSettings({ theme: 'dark' })}
+                    />
+                    Dark
+                  </label>
+                </div>
               </div>
 
               <div className="flex flex-col gap-2">
@@ -1936,11 +2044,21 @@ export default function App() {
                   </select>
                 </div>
               </div>
+              </div>
+              )}
 
+              {/* ---- Group ---- */}
               {selectedGroup && (
-                <div className="flex flex-col gap-4 pt-6 border-t-[0.5px] border-[#1A1A1A]">
-                  <label className="font-sans text-[10px] uppercase tracking-widest opacity-60">Group</label>
-
+                <>
+                <button
+                  onClick={() => setOpenSettingsSection(prev => (prev === 'group' ? '' : 'group'))}
+                  className="w-full flex items-center justify-between py-3 border-b-[0.5px] border-[#1A1A1A]/20"
+                >
+                  <span className="font-sans text-[11px] uppercase tracking-[0.2em]">Group — {selectedGroup.name}</span>
+                  <ChevronRight size={14} className={`opacity-50 transition-transform ${openSettingsSection === 'group' ? 'rotate-90' : ''}`} />
+                </button>
+                {openSettingsSection === 'group' && (
+                <div className="flex flex-col gap-4 py-4">
                   {/* Everyone is an admin — all controls available to all members */}
                   <input
                     type="text"
@@ -2024,9 +2142,20 @@ export default function App() {
                     )}
                   </div>
                 </div>
+                )}
+                </>
               )}
 
-              <div className="pt-6 border-t-[0.5px] border-[#1A1A1A] flex flex-col gap-4">
+              {/* ---- Notifications ---- */}
+              <button
+                onClick={() => setOpenSettingsSection(prev => (prev === 'notifications' ? '' : 'notifications'))}
+                className="w-full flex items-center justify-between py-3 border-b-[0.5px] border-[#1A1A1A]/20"
+              >
+                <span className="font-sans text-[11px] uppercase tracking-[0.2em]">Notifications</span>
+                <ChevronRight size={14} className={`opacity-50 transition-transform ${openSettingsSection === 'notifications' ? 'rotate-90' : ''}`} />
+              </button>
+              {openSettingsSection === 'notifications' && (
+              <div className="flex flex-col gap-4 py-4">
                 <div className="flex flex-col gap-3">
                   <button onClick={handleNudge} disabled={isNudging} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity disabled:opacity-30 w-fit">
                     <Bell size={14} className={isNudging ? 'animate-bounce text-[#C5A059]' : ''} />
@@ -2089,18 +2218,30 @@ export default function App() {
                       </label>
                     </div>
                   </div>
-
-                  <button onClick={() => window.print()} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity w-fit">
-                    <Download size={14} />
-                    <span>Download Chronicle PDF</span>
-                  </button>
-                  <button onClick={handleExportCollage} disabled={isGeneratingCollage} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity disabled:opacity-30 w-fit">
-                    <ImageIcon size={14} />
-                    <span>{isGeneratingCollage ? 'Exporting...' : 'Export Collage Image'}</span>
-                  </button>
                 </div>
+              </div>
+              )}
 
-                <div className="flex flex-col gap-4 pt-8 mt-4 border-t-[0.5px] border-[#1A1A1A]/20">
+              {/* ---- Data & Account ---- */}
+              <button
+                onClick={() => setOpenSettingsSection(prev => (prev === 'data' ? '' : 'data'))}
+                className="w-full flex items-center justify-between py-3 border-b-[0.5px] border-[#1A1A1A]/20"
+              >
+                <span className="font-sans text-[11px] uppercase tracking-[0.2em]">Data &amp; Account</span>
+                <ChevronRight size={14} className={`opacity-50 transition-transform ${openSettingsSection === 'data' ? 'rotate-90' : ''}`} />
+              </button>
+              {openSettingsSection === 'data' && (
+              <div className="flex flex-col gap-4 py-4">
+                <button onClick={() => window.print()} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity w-fit">
+                  <Download size={14} />
+                  <span>Download Chronicle PDF</span>
+                </button>
+                <button onClick={handleExportCollage} disabled={isGeneratingCollage} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity disabled:opacity-30 w-fit">
+                  <ImageIcon size={14} />
+                  <span>{isGeneratingCollage ? 'Exporting...' : 'Export Collage Image'}</span>
+                </button>
+
+                <div className="flex flex-col gap-4 pt-6 mt-2 border-t-[0.5px] border-[#1A1A1A]/20">
                   <button onClick={handleLogout} className="flex items-center gap-2 text-sm opacity-60 hover:opacity-100 transition-opacity w-fit">
                     <LogOut size={14} />
                     <span>Logout</span>
@@ -2112,6 +2253,7 @@ export default function App() {
                   </button>
                 </div>
               </div>
+              )}
             </div>
           </div>
         </div>

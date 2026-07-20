@@ -33,6 +33,7 @@ interface PhotoRow {
   profile_id: string;
   taken_at: string;
   image_path: string;
+  thumb_path: string | null;
   metadata: PhotoMetadata | null;
   firebase_id: string | null;
   comments: CommentRow[];
@@ -85,6 +86,7 @@ function mapPhotoRow(ph: PhotoRow, profiles: Record<string, AppUser>): Photo {
     timestamp: ph.taken_at,
     imageUrl: publicPhotoUrl(ph.image_path),
     imagePath: ph.image_path,
+    thumbUrl: ph.thumb_path ? publicPhotoUrl(ph.thumb_path) : undefined,
     metadata: ph.metadata || undefined,
     comments: ph.comments
       .sort((a, b) => a.created_at.localeCompare(b.created_at))
@@ -293,14 +295,33 @@ export async function fetchGroupData(groupId: string): Promise<AppData> {
   return { profiles, photos, memberIds };
 }
 
-export async function uploadPhotoToGroups(profileId: string, imageBlob: Blob, metadata: PhotoMetadata, groupIds: string[]): Promise<void> {
+export async function uploadPhotoToGroups(
+  profileId: string,
+  imageBlob: Blob,
+  thumbBlob: Blob | null,
+  metadata: PhotoMetadata,
+  groupIds: string[]
+): Promise<void> {
   if (groupIds.length === 0) throw new Error('Select at least one group to share this to.');
 
-  const path = `${profileId}/${crypto.randomUUID()}.jpg`;
+  const baseName = crypto.randomUUID();
+  const path = `${profileId}/${baseName}.jpg`;
   const { error: uploadError } = await supabase.storage.from('photos').upload(path, imageBlob, {
     contentType: 'image/jpeg',
   });
   if (uploadError) throw describeError('storage upload failed', uploadError);
+
+  // Thumbnail is best-effort: the matrix falls back to the full image when
+  // absent, so a thumb failure should never block the capture.
+  let thumbPath: string | null = null;
+  if (thumbBlob) {
+    const candidate = `${profileId}/${baseName}_t.jpg`;
+    const { error: thumbError } = await supabase.storage.from('photos').upload(candidate, thumbBlob, {
+      contentType: 'image/jpeg',
+    });
+    if (!thumbError) thumbPath = candidate;
+    else console.warn('Thumbnail upload failed:', thumbError);
+  }
 
   // Insert + group-share happen server-side (create_photo RPC), which resolves
   // the profile from the session rather than trusting a client-passed id, and
@@ -309,6 +330,7 @@ export async function uploadPhotoToGroups(profileId: string, imageBlob: Blob, me
     p_image_path: path,
     p_metadata: metadata,
     p_group_ids: groupIds,
+    p_thumb_path: thumbPath,
   });
   if (error) throw describeError('photo insert failed', error);
 }
@@ -361,8 +383,8 @@ export async function deleteAccount(profileId: string): Promise<void> {
   // Storage ownership may block files uploaded by the migration; orphaned
   // files are harmless either way.
   try {
-    const { data } = await supabase.from('photos').select('image_path').eq('profile_id', profileId);
-    const paths = (data || []).map(r => r.image_path as string).filter(Boolean);
+    const { data } = await supabase.from('photos').select('image_path, thumb_path').eq('profile_id', profileId);
+    const paths = (data || []).flatMap(r => [r.image_path as string, r.thumb_path as string | null]).filter((p): p is string => !!p);
     if (paths.length > 0) {
       await supabase.storage.from('photos').remove(paths).then(() => undefined, () => undefined);
     }

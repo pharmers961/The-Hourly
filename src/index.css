@@ -12,6 +12,26 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Dark mode: the app is two-tone (cream/ink with a gold accent), so a
+   filter inversion with hue restoration produces a faithful dark theme
+   without restyling hundreds of hardcoded color classes. Photos get the
+   same filter re-applied to cancel it out and render true-to-life. */
+.theme-dark {
+  filter: invert(1) hue-rotate(180deg);
+  background-color: #060707;
+}
+.theme-dark img,
+.theme-dark video {
+  filter: invert(1) hue-rotate(180deg);
+}
+@media print {
+  .theme-dark,
+  .theme-dark img,
+  .theme-dark video {
+    filter: none !important;
+  }
+}
+
 @media print {
   @page {
     margin: 1cm;

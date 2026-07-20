@@ -6,6 +6,7 @@ export interface UserSettings {
   notifyLikes?: boolean;
   notifyComments?: boolean;
   notifyReminders?: boolean;
+  theme?: 'light' | 'dark';
 }
 
 export interface User {
@@ -39,6 +40,7 @@ export interface Photo {
   timestamp: string; // ISO string
   imageUrl: string;
   imagePath?: string; // storage object path (Supabase)
+  thumbUrl?: string; // small version for matrix tiles; absent on older photos
   metadata?: PhotoMetadata;
   comments?: Comment[];
   reactions?: Record<string, string[]>; // map of emoji to userIds
