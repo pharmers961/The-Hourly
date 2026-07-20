@@ -346,7 +346,7 @@ export async function sendNudges(fromProfileId: string, toProfileIds: string[], 
 }
 
 export async function sendNotifications(
-  rows: { toProfileId: string; fromName: string; photoId: string; text: string; type: 'comment' | 'mention' }[]
+  rows: { toProfileId: string; fromName: string; photoId: string; text: string; type: 'comment' | 'mention' | 'like' }[]
 ): Promise<void> {
   if (rows.length === 0) return;
   const { error } = await supabase.from('notifications').insert(

@@ -87,9 +87,14 @@ create table if not exists public.notifications (
   from_name text not null check (char_length(from_name) <= 50),
   photo_id uuid references public.photos(id) on delete cascade,
   text text check (char_length(text) <= 1000),
-  type text not null check (type in ('comment', 'mention')),
+  type text not null check (type in ('comment', 'mention', 'like')),
   created_at timestamptz not null default now()
 );
+
+-- Migration for databases created before the 'like' type existed
+alter table public.notifications drop constraint if exists notifications_type_check;
+alter table public.notifications add constraint notifications_type_check
+  check (type in ('comment', 'mention', 'like'));
 
 create index if not exists photos_taken_at_idx on public.photos (taken_at desc);
 create index if not exists comments_photo_idx on public.comments (photo_id);

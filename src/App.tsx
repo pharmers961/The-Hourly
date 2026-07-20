@@ -343,10 +343,18 @@ export default function App() {
         refreshGroups();
       },
       onNudge: (fromProfileId) => {
+        if (usersRef.current[profile.id]?.settings?.notifyReminders === false) return;
         const fromName = usersRef.current[fromProfileId]?.name.split(' ')[0] || 'Someone';
         showLocalNotification('The Hourly: Nudge!', `${fromName} nudged you to capture your moment!`);
       },
       onNotification: (n) => {
+        const mySettings = usersRef.current[profile.id]?.settings;
+        if (n.type === 'like') {
+          if (mySettings?.notifyLikes === false) return;
+          showLocalNotification('The Hourly', `${n.from_name} reacted ${n.text || '❤️'} to your photo`);
+          return;
+        }
+        if (mySettings?.notifyComments === false) return;
         showLocalNotification(
           'The Hourly',
           n.type === 'mention'
@@ -637,15 +645,17 @@ export default function App() {
 
       if (notificationPermission === 'granted') {
         const currentHour = now.getHours();
+        const myId = profile?.id;
+        const remindersOff = !!myId && usersRef.current[myId]?.settings?.notifyReminders === false;
         // Notify at top of the hour (minute 0)
-        if (now.getMinutes() === 0 && lastNotifiedHour.current !== currentHour) {
+        if (now.getMinutes() === 0 && lastNotifiedHour.current !== currentHour && !remindersOff) {
           showLocalNotification('The Hourly', 'A new hour has begun. Time to chronicle your moment.');
           lastNotifiedHour.current = currentHour;
         }
       }
     }, 60000);
     return () => clearInterval(timer);
-  }, [notificationPermission, refreshHasPostedThisHour]);
+  }, [notificationPermission, refreshHasPostedThisHour, profile?.id]);
 
   const handleGoogleLogin = async () => {
     try {
@@ -692,7 +702,8 @@ export default function App() {
 
     try {
       const currentHourKey = new Date(currentTime.getFullYear(), currentTime.getMonth(), currentTime.getDate(), currentTime.getHours()).toISOString();
-      await api.sendNudges(user.uid, missedSiblings.map(s => s.id), currentHourKey);
+      // Skip anyone who turned reminder notifications off
+      await api.sendNudges(user.uid, missedSiblings.filter(s => s.settings?.notifyReminders !== false).map(s => s.id), currentHourKey);
       showToast('Nudge sent', 'success');
     } catch (err) {
       console.error('Failed to send nudges:', err);
@@ -965,12 +976,24 @@ export default function App() {
     }
   };
 
+  // Tell the photo's owner they got a reaction — only when one was added
+  // (not removed), never for your own photo, and only if the owner hasn't
+  // turned like notifications off.
+  const maybeSendLikeNotification = (photo: Photo | undefined, emoji: string, wasAdded: boolean) => {
+    if (!wasAdded || !photo || !user || photo.userId === user.uid) return;
+    if (users[photo.userId]?.settings?.notifyLikes === false) return;
+    const fromName = user.displayName?.split(' ')[0] || 'Someone';
+    api.sendNotifications([{ toProfileId: photo.userId, fromName, photoId: photo.id, text: emoji, type: 'like' }])
+      .catch(err => console.warn('Failed to send like notification:', err));
+  };
+
   const handleReaction = async (photoId: string, emoji: string = '❤️') => {
     if (!user) return;
     try {
       const photo = photos.find(p => p.id === photoId);
       const hasReacted = (photo?.reactions?.[emoji] || []).includes(user.uid);
       await api.setReaction(photoId, user.uid, emoji, !hasReacted);
+      maybeSendLikeNotification(photo, emoji, !hasReacted);
       await refreshData();
     } catch (err) {
       console.error('Failed to react:', err);
@@ -1051,13 +1074,18 @@ export default function App() {
       notifyUsers.delete(user.uid);
 
       const fromName = user.displayName?.split(' ')[0] || 'Someone';
-      await api.sendNotifications([...notifyUsers].map(toProfileId => ({
-        toProfileId,
-        fromName,
-        photoId: selectedPhoto.id,
-        text,
-        type: mentionedUsers.some(u => u.id === toProfileId) ? 'mention' as const : 'comment' as const,
-      })));
+      await api.sendNotifications(
+        [...notifyUsers]
+          // Respect each recipient's own preference
+          .filter(id => users[id]?.settings?.notifyComments !== false)
+          .map(toProfileId => ({
+            toProfileId,
+            fromName,
+            photoId: selectedPhoto.id,
+            text,
+            type: mentionedUsers.some(u => u.id === toProfileId) ? 'mention' as const : 'comment' as const,
+          }))
+      );
 
       setCommentText('');
       await refreshData();
@@ -1083,6 +1111,7 @@ export default function App() {
     try {
       const hasReacted = (selectedPhoto.reactions?.[emoji] || []).includes(user.uid);
       await api.setReaction(selectedPhoto.id, user.uid, emoji, !hasReacted);
+      maybeSendLikeNotification(selectedPhoto, emoji, !hasReacted);
       await refreshData();
     } catch (err) {
       console.error('Failed to toggle reaction:', err);
@@ -2030,6 +2059,36 @@ export default function App() {
                       <span>Alerts blocked — allow notifications for this site in your browser settings</span>
                     </div>
                   )}
+
+                  <div className="flex flex-col gap-2">
+                    <label className="font-sans text-[10px] uppercase tracking-widest opacity-60">Notify Me About</label>
+                    <div className="flex flex-col gap-2 font-sans text-sm">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={users[user.uid]?.settings?.notifyLikes !== false}
+                          onChange={(e) => handleSaveSettings({ notifyLikes: e.target.checked })}
+                        />
+                        Likes on my photos
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={users[user.uid]?.settings?.notifyComments !== false}
+                          onChange={(e) => handleSaveSettings({ notifyComments: e.target.checked })}
+                        />
+                        Comments &amp; mentions
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={users[user.uid]?.settings?.notifyReminders !== false}
+                          onChange={(e) => handleSaveSettings({ notifyReminders: e.target.checked })}
+                        />
+                        Reminders to post (nudges &amp; new hour)
+                      </label>
+                    </div>
+                  </div>
 
                   <button onClick={() => window.print()} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity w-fit">
                     <Download size={14} />

@@ -73,11 +73,16 @@ Deno.serve(async (req) => {
     if (!row) return new Response('no row', { status: 200 });
     toProfileId = row.to_profile_id;
     title = 'The Hourly';
-    body =
-      row.type === 'mention'
-        ? `${row.from_name} mentioned you: ${row.text || ''}`
-        : `${row.from_name} commented on your photo: ${row.text || ''}`;
-    tag = 'comment';
+    if (row.type === 'like') {
+      body = `${row.from_name} reacted ${row.text || '❤️'} to your photo`;
+      tag = 'like';
+    } else {
+      body =
+        row.type === 'mention'
+          ? `${row.from_name} mentioned you: ${row.text || ''}`
+          : `${row.from_name} commented on your photo: ${row.text || ''}`;
+      tag = 'comment';
+    }
   }
 
   const { data: subs } = await supabase

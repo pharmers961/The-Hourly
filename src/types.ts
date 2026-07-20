@@ -2,6 +2,10 @@ export interface UserSettings {
   temperatureUnit: 'C' | 'F';
   timeFormat: '12h' | '24h';
   displayLocation?: string;
+  // Notification preferences — absent means enabled (opt-out model)
+  notifyLikes?: boolean;
+  notifyComments?: boolean;
+  notifyReminders?: boolean;
 }
 
 export interface User {
