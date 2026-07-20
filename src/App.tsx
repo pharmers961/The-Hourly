@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon, Maximize, Clock, RefreshCw, Newspaper } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
-import html2canvas from 'html2canvas';
+import { toJpeg } from 'html-to-image';
 import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImageToBlob, makeThumbnailBlob, getRelativeTime, extractExifGps } from './utils';
 import { supabase, isSupabaseConfigured } from './supabase';
 import * as api from './api';
@@ -538,15 +538,15 @@ export default function App() {
     if (!recapRef.current) return;
     setIsSavingRecap(true);
     try {
-      const canvas = await html2canvas(recapRef.current, {
-        scale: 2,
+      const dataUrl = await toJpeg(recapRef.current, {
+        quality: 0.9,
+        pixelRatio: 2,
+        cacheBust: true,
         backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--color-paper').trim() || '#F9F8F5',
-        logging: false,
-        useCORS: true
       });
       const link = document.createElement('a');
       link.download = `The-Hourly-Weekly-${new Date().toLocaleDateString().replace(/\//g, '-')}.jpg`;
-      link.href = canvas.toDataURL('image/jpeg', 0.9);
+      link.href = dataUrl;
       link.click();
     } catch (err) {
       console.error('Recap export failed', err);
@@ -1128,13 +1128,12 @@ export default function App() {
     if (!collageRef.current) return;
     setIsGeneratingCollage(true);
     try {
-      const canvas = await html2canvas(collageRef.current, {
-        scale: 2,
+      const dataUrl = await toJpeg(collageRef.current, {
+        quality: 0.9,
+        pixelRatio: 2,
+        cacheBust: true,
         backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--color-paper').trim() || '#F9F8F5',
-        logging: false,
-        useCORS: true
       });
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
       const link = document.createElement('a');
       link.download = `The-Hourly-${selectedDate.toLocaleDateString().replace(/\//g, '-')}.jpg`;
       link.href = dataUrl;
