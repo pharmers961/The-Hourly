@@ -43,7 +43,13 @@ export default defineConfig(() => {
           ]
         },
         workbox: {
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}']
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+          // Web Push handlers live in public/push-sw.js and get imported
+          // into the generated service worker
+          importScripts: ['push-sw.js'],
+          // push-sw.js must load fresh with each SW version, not from the
+          // precache manifest
+          globIgnores: ['push-sw.js']
         }
       })
     ],

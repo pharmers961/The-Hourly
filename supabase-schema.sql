@@ -645,6 +645,81 @@ exception when others then
 end $$;
 
 -- ---------------------------------------------------------------------------
+-- Web Push: per-device subscriptions + triggers that hand new nudges and
+-- notifications to the send-push Edge Function (which delivers them even
+-- when the recipient's app is closed).
+-- ---------------------------------------------------------------------------
+
+create table if not exists public.push_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  profile_id uuid not null references public.profiles(id) on delete cascade,
+  endpoint text unique not null,
+  p256dh text not null,
+  auth text not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists push_subscriptions_profile_idx on public.push_subscriptions (profile_id);
+
+alter table public.push_subscriptions enable row level security;
+
+drop policy if exists "push read own" on public.push_subscriptions;
+create policy "push read own" on public.push_subscriptions
+  for select to authenticated using (profile_id = public.my_profile_id());
+
+drop policy if exists "push insert own" on public.push_subscriptions;
+create policy "push insert own" on public.push_subscriptions
+  for insert to authenticated with check (profile_id = public.my_profile_id());
+
+drop policy if exists "push update own" on public.push_subscriptions;
+create policy "push update own" on public.push_subscriptions
+  for update to authenticated using (profile_id = public.my_profile_id());
+
+drop policy if exists "push delete own" on public.push_subscriptions;
+create policy "push delete own" on public.push_subscriptions
+  for delete to authenticated using (profile_id = public.my_profile_id());
+
+-- Triggers = the same mechanism the dashboard's "Database Webhooks" UI
+-- creates, just defined in SQL so no extra clicking is needed. Wrapped in
+-- exception handlers in case the supabase_functions helper isn't available,
+-- in which case create two webhooks by hand in the dashboard instead
+-- (Database -> Webhooks: on INSERT into nudges and notifications, POST to
+-- the send-push function URL).
+do $$
+begin
+  drop trigger if exists nudges_send_push on public.nudges;
+  create trigger nudges_send_push
+    after insert on public.nudges
+    for each row
+    execute function supabase_functions.http_request(
+      'https://hnuznphuqpencmrtfrzv.supabase.co/functions/v1/send-push',
+      'POST',
+      '{"Content-Type":"application/json"}',
+      '{}',
+      '5000'
+    );
+exception when others then
+  raise notice 'Could not create nudges push trigger (%). Create a Database Webhook in the dashboard instead.', sqlerrm;
+end $$;
+
+do $$
+begin
+  drop trigger if exists notifications_send_push on public.notifications;
+  create trigger notifications_send_push
+    after insert on public.notifications
+    for each row
+    execute function supabase_functions.http_request(
+      'https://hnuznphuqpencmrtfrzv.supabase.co/functions/v1/send-push',
+      'POST',
+      '{"Content-Type":"application/json"}',
+      '{}',
+      '5000'
+    );
+exception when others then
+  raise notice 'Could not create notifications push trigger (%). Create a Database Webhook in the dashboard instead.', sqlerrm;
+end $$;
+
+-- ---------------------------------------------------------------------------
 -- Realtime
 -- ---------------------------------------------------------------------------
 

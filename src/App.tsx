@@ -117,10 +117,35 @@ export default function App() {
     'Notification' in window ? Notification.permission : 'default'
   );
 
+  // Chrome on Android rejects `new Notification(...)` from a page outright —
+  // mobile notifications must go through the service worker. Route through it
+  // everywhere, with the constructor kept only as a desktop fallback.
+  const showLocalNotification = (title: string, body: string) => {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    const fallback = () => {
+      try {
+        new Notification(title, { body, icon: '/icon-192.png' });
+      } catch {
+        // no notification surface available; nothing else to do
+      }
+    };
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.ready
+        .then(reg => reg.showNotification(title, { body, icon: '/icon-192.png', badge: '/icon-192.png' }))
+        .catch(fallback);
+    } else {
+      fallback();
+    }
+  };
+
   const requestNotificationPermission = async () => {
     if ('Notification' in window) {
       const permission = await Notification.requestPermission();
       setNotificationPermission(permission);
+      if (permission === 'granted' && profile) {
+        await api.registerPushSubscription(profile.id);
+        showToast('Notifications enabled', 'success');
+      }
     }
   };
 
@@ -146,6 +171,17 @@ export default function App() {
     });
     return () => subscription.unsubscribe();
   }, []);
+
+  // On sign-in: refresh this device's push subscription (endpoints rotate,
+  // and each device registers itself) and clear pings that predate this
+  // session — push already delivered them while the app was closed.
+  useEffect(() => {
+    if (!profile) return;
+    if ('Notification' in window && Notification.permission === 'granted') {
+      api.registerPushSubscription(profile.id);
+    }
+    api.clearMyPendingPings(profile.id);
+  }, [profile?.id]);
 
   // Heartbeat: lastActive is otherwise only written at login, so without this
   // the 10-minute online check runs on stale data. Refresh it periodically
@@ -308,23 +344,16 @@ export default function App() {
         refreshGroups();
       },
       onNudge: (fromProfileId) => {
-        if (notificationPermission === 'granted') {
-          const fromName = usersRef.current[fromProfileId]?.name.split(' ')[0] || 'Someone';
-          new Notification('The Hourly: Nudge!', {
-            body: `${fromName} nudged you to capture your moment!`,
-            icon: '/favicon.svg'
-          });
-        }
+        const fromName = usersRef.current[fromProfileId]?.name.split(' ')[0] || 'Someone';
+        showLocalNotification('The Hourly: Nudge!', `${fromName} nudged you to capture your moment!`);
       },
       onNotification: (n) => {
-        if (notificationPermission === 'granted') {
-          new Notification('The Hourly', {
-            body: n.type === 'mention'
-              ? `${n.from_name} mentioned you: ${n.text || ''}`
-              : `${n.from_name} commented on your photo: ${n.text || ''}`,
-            icon: '/favicon.svg'
-          });
-        }
+        showLocalNotification(
+          'The Hourly',
+          n.type === 'mention'
+            ? `${n.from_name} mentioned you: ${n.text || ''}`
+            : `${n.from_name} commented on your photo: ${n.text || ''}`
+        );
       },
     });
 
@@ -613,10 +642,7 @@ export default function App() {
         const currentHour = now.getHours();
         // Notify at top of the hour (minute 0)
         if (now.getMinutes() === 0 && lastNotifiedHour.current !== currentHour) {
-          new Notification('The Hourly', {
-            body: 'A new hour has begun. Time to chronicle your moment.',
-            icon: '/favicon.svg'
-          });
+          showLocalNotification('The Hourly', 'A new hour has begun. Time to chronicle your moment.');
           lastNotifiedHour.current = currentHour;
         }
       }

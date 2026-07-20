@@ -1,6 +1,6 @@
 // Supabase data layer for The Hourly. All reads map database rows into the
 // app's existing Photo/User shapes so the UI is agnostic of the backend.
-import { supabase } from './supabase';
+import { supabase, vapidPublicKey } from './supabase';
 import { Photo, User as AppUser, PhotoMetadata, UserSettings, Group } from './types';
 
 interface ProfileRow {
@@ -377,6 +377,53 @@ export async function deleteAccount(profileId: string): Promise<void> {
   const { error } = await supabase.from('profiles').delete().eq('id', profileId);
   if (error) throw error;
   await supabase.auth.signOut();
+}
+
+// ---------------------------------------------------------------------------
+// Web Push
+// ---------------------------------------------------------------------------
+
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+// Subscribes this browser/device to Web Push and records the subscription so
+// the send-push Edge Function can reach it. Safe to call repeatedly (the
+// endpoint upserts); quietly no-ops where push isn't available (e.g. an
+// iPhone browser tab that hasn't been added to the home screen).
+export async function registerPushSubscription(profileId: string): Promise<void> {
+  if (!vapidPublicKey || !('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
+    });
+    const json = subscription.toJSON() as { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
+    if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) return;
+    await supabase.from('push_subscriptions').upsert(
+      { profile_id: profileId, endpoint: json.endpoint, p256dh: json.keys.p256dh, auth: json.keys.auth },
+      { onConflict: 'endpoint' }
+    );
+  } catch (err) {
+    // Not fatal: in-app notifications still work without a push subscription
+    console.warn('Push subscription failed:', err);
+  }
+}
+
+// Nudges/notifications are delivered by push (app closed) or realtime (app
+// open); either way, rows that have been sitting since before this session
+// started have already served their purpose — clear them.
+export async function clearMyPendingPings(profileId: string): Promise<void> {
+  await supabase.from('nudges').delete().eq('to_profile_id', profileId).then(() => undefined, () => undefined);
+  await supabase.from('notifications').delete().eq('to_profile_id', profileId).then(() => undefined, () => undefined);
 }
 
 export interface RealtimeHandlers {
