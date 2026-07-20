@@ -1371,8 +1371,8 @@ export default function App() {
         ) : (
         <div
           ref={collageRef}
-          style={{ minWidth: Math.max(200, 48 + columnUsers.length * 96) }}
-          className="max-w-4xl mx-auto px-4 md:px-10 pb-24 w-full print:px-0 print:pb-0"
+          style={{ minWidth: Math.max(200, 48 + columnUsers.length * 88) }}
+          className="max-w-4xl mx-auto px-2 md:px-10 pb-24 w-full print:px-0 print:pb-0"
         >
           {/* Column Headers (X-Axis: Names) */}
           <div className="sticky top-0 z-20 bg-paper pt-6 grid gap-2 md:gap-4 mb-4 border-b-[0.5px] border-ink pb-2 print:relative print:bg-card print:border-black print:pt-4" style={gridStyle}>
@@ -1417,7 +1417,7 @@ export default function App() {
                 <div 
                   id={isCurrent ? 'current-hour-slot' : undefined}
                   key={slot.hourKey} 
-                  className={`grid gap-2 md:gap-4 p-2 md:p-0 transition-colors print:page-break-inside-avoid print:h-[200px] ${
+                  className={`grid gap-2 md:gap-4 transition-colors print:page-break-inside-avoid print:h-[200px] ${
                     isCurrent ? 'outline outline-1 outline-offset-4 outline-gold bg-gold/5 print:outline-none print:bg-transparent' : ''
                   }`} 
                   style={gridStyle}
