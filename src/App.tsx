@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon, Maximize, Clock, RefreshCw, Newspaper, History } from 'lucide-react';
+import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon, Maximize, Clock, RefreshCw, Newspaper, History, Flag } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import { toJpeg } from 'html-to-image';
 import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImageToBlob, makeThumbnailBlob, getRelativeTime, extractExifGps, timezoneAbbreviation, isQuietHours } from './utils';
@@ -35,6 +35,10 @@ export default function App() {
   const [isGeneratingCollage, setIsGeneratingCollage] = useState(false);
   const [isFullscreenPhoto, setIsFullscreenPhoto] = useState(false);
   const [toasts, setToasts] = useState<{ id: number; message: string; type: 'error' | 'success' }[]>([]);
+  // Reporting a photo as inappropriate: which photo the reason-picker is open
+  // for, and whether a submission is in flight.
+  const [reportingPhoto, setReportingPhoto] = useState<Photo | null>(null);
+  const [isReporting, setIsReporting] = useState(false);
   const collageRef = useRef<HTMLDivElement>(null);
 
   // Weekly recap ("The Weekly")
@@ -1243,6 +1247,21 @@ export default function App() {
     }
   };
 
+  const handleReportPhoto = async (reason: string) => {
+    if (!reportingPhoto || !user) return;
+    setIsReporting(true);
+    try {
+      await api.reportPhoto(reportingPhoto.id, user.uid, reason);
+      showToast('Thanks — this photo has been reported for review', 'success');
+      setReportingPhoto(null);
+    } catch (err) {
+      console.error('Failed to report photo:', err);
+      showToast(`Couldn't submit report${errDetail(err)}`);
+    } finally {
+      setIsReporting(false);
+    }
+  };
+
   const handleSaveName = async () => {
     if (!profile) return;
     const name = localNameInput.trim();
@@ -2108,6 +2127,16 @@ export default function App() {
               <Share size={16} />
               <span className="hidden md:inline">Share</span>
             </button>
+            {user && selectedPhoto.userId !== user.uid && (
+              <button
+                onClick={() => setReportingPhoto(selectedPhoto)}
+                className="flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-100 transition-opacity cursor-pointer opacity-60"
+                aria-label="Report this photo"
+              >
+                <Flag size={16} />
+                <span className="hidden md:inline">Report</span>
+              </button>
+            )}
           </div>
 
           <div className={`${isFullscreenPhoto ? 'w-full h-full flex flex-col items-center justify-center p-0' : 'max-w-4xl w-full flex flex-col items-center gap-8 overflow-y-auto max-h-[90vh] py-10 px-4'} relative transition-all duration-300`}>
@@ -2975,6 +3004,48 @@ export default function App() {
                 </div>
               </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Report a photo: reason picker */}
+      {reportingPhoto && (
+        <div
+          className="fixed inset-0 z-[110] bg-ink/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200"
+          onClick={() => { if (!isReporting) setReportingPhoto(null); }}
+        >
+          <div
+            className="bg-paper text-ink border-[0.5px] border-ink max-w-sm w-full p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between mb-1">
+              <h2 className="font-serif text-2xl italic">Report photo</h2>
+              <button onClick={() => { if (!isReporting) setReportingPhoto(null); }} className="opacity-50 hover:opacity-100 transition-opacity" aria-label="Cancel">
+                <X size={18} />
+              </button>
+            </div>
+            <p className="font-sans text-[10px] uppercase tracking-[0.15em] opacity-50 leading-relaxed mb-5">
+              Tell us what's wrong. This is sent to the app owner for review.
+            </p>
+            <div className="flex flex-col gap-2">
+              {[
+                'Nudity or sexual content',
+                'Violence or dangerous content',
+                'Harassment or bullying',
+                'Hate speech',
+                'Spam or misleading',
+                'Other',
+              ].map(reason => (
+                <button
+                  key={reason}
+                  onClick={() => handleReportPhoto(reason)}
+                  disabled={isReporting}
+                  className="text-left font-sans text-sm border-[0.5px] border-ink/30 hover:border-ink hover:bg-ink hover:text-paper px-4 py-3 transition-colors disabled:opacity-40"
+                >
+                  {reason}
+                </button>
+              ))}
             </div>
           </div>
         </div>

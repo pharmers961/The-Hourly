@@ -75,7 +75,7 @@ function mapProfileRow(row: ProfileRow): AppUser {
   };
 }
 
-function mapPhotoRow(ph: PhotoRow, profiles: Record<string, AppUser>, viewsByPhoto?: Record<string, string[]>): Photo {
+function mapPhotoRow(ph: PhotoRow, profiles: Record<string, AppUser>, viewsByPhoto: Record<string, string[]> | undefined, urlFor: (path: string) => string): Photo {
   const reactions: Record<string, string[]> = {};
   ph.reactions.forEach(r => {
     (reactions[r.emoji] ||= []).push(r.profile_id);
@@ -86,9 +86,9 @@ function mapPhotoRow(ph: PhotoRow, profiles: Record<string, AppUser>, viewsByPho
     id: ph.id,
     userId: ph.profile_id,
     timestamp: ph.taken_at,
-    imageUrl: publicPhotoUrl(ph.image_path),
+    imageUrl: urlFor(ph.image_path),
     imagePath: ph.image_path,
-    thumbUrl: ph.thumb_path ? publicPhotoUrl(ph.thumb_path) : undefined,
+    thumbUrl: ph.thumb_path ? urlFor(ph.thumb_path) : undefined,
     metadata: ph.metadata || undefined,
     comments: ph.comments
       .sort((a, b) => a.created_at.localeCompare(b.created_at))
@@ -109,8 +109,40 @@ export interface AppData {
   memberIds: string[];
 }
 
+// Fallback only. With a private `photos` bucket (see supabase-security-hardening.sql)
+// this returns a non-working URL; it exists so the app keeps rendering during
+// the public -> private cutover, before signed URLs take over below.
 export function publicPhotoUrl(imagePath: string): string {
   return supabase.storage.from('photos').getPublicUrl(imagePath).data.publicUrl;
+}
+
+// How long a signed photo URL stays valid. Photos are re-fetched (and re-signed)
+// on reload, navigation, and realtime changes, so this only needs to outlast a
+// single viewing session. Kept modest so a forwarded/leaked URL doesn't stay
+// live indefinitely — the whole point of moving off a public bucket.
+const SIGNED_URL_TTL_SECONDS = 60 * 60 * 4;
+
+// Batch-sign every storage path a group's photos need, so a private bucket can
+// serve them without exposing permanent public URLs. Storage row-level security
+// (the "photo read visible" policy) means a signature is only ever issued for a
+// photo the caller is already allowed to see. Any path that fails to sign falls
+// back to the public URL — harmless while the bucket is still public, and a
+// broken image at worst once it's private (which shouldn't happen for photos we
+// just fetched as visible).
+async function buildUrlResolver(paths: string[]): Promise<(path: string) => string> {
+  const unique = [...new Set(paths.filter(Boolean))];
+  const signed: Record<string, string> = {};
+  if (unique.length > 0) {
+    try {
+      const { data } = await supabase.storage.from('photos').createSignedUrls(unique, SIGNED_URL_TTL_SECONDS);
+      (data || []).forEach(entry => {
+        if (entry.path && entry.signedUrl) signed[entry.path] = entry.signedUrl;
+      });
+    } catch {
+      // fall through to public URLs for every path
+    }
+  }
+  return (path: string) => signed[path] || publicPhotoUrl(path);
 }
 
 // ---------------------------------------------------------------------------
@@ -301,8 +333,14 @@ export async function fetchGroupData(groupId: string): Promise<AppData> {
     });
   }
 
+  // Sign every image/thumb path up front (one batched request) so a private
+  // bucket serves them via short-lived URLs instead of permanent public ones.
+  const urlFor = await buildUrlResolver(
+    photoRows.flatMap(p => [p.image_path, p.thumb_path]).filter((p): p is string => !!p)
+  );
+
   const photos: Photo[] = photoRows
-    .map(row => mapPhotoRow(row, profiles, viewsByPhoto))
+    .map(row => mapPhotoRow(row, profiles, viewsByPhoto, urlFor))
     .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
   return { profiles, photos, memberIds };
@@ -415,6 +453,17 @@ export async function setReaction(photoId: string, profileId: string, emoji: str
       .eq('photo_id', photoId).eq('profile_id', profileId).eq('emoji', emoji);
     if (error) throw error;
   }
+}
+
+// Flags a photo as inappropriate for the operator to review. One report per
+// person per photo (a repeat tap just updates the reason). RLS only lets you
+// report a photo you can actually see.
+export async function reportPhoto(photoId: string, reporterProfileId: string, reason: string): Promise<void> {
+  const { error } = await supabase.from('photo_reports').upsert(
+    { photo_id: photoId, reporter_profile_id: reporterProfileId, reason },
+    { onConflict: 'photo_id,reporter_profile_id' }
+  );
+  if (error) throw describeError('report failed', error);
 }
 
 export async function sendNudges(fromProfileId: string, toProfileIds: string[], hourKey: string): Promise<void> {
