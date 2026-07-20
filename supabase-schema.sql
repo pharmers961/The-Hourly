@@ -308,6 +308,17 @@ begin
 end;
 $$;
 
+-- Returns just the group's name for a valid invite code, callable by the
+-- anon role — used by the /join link-preview endpoint so shared invites
+-- show "Join our Hourly group — <name>" in chat apps. Exposes nothing but
+-- the name, and only to someone who already holds the unguessable code.
+create or replace function public.get_group_preview(p_code text)
+returns text
+language sql stable security definer set search_path = public
+as $$
+  select name from groups where invite_code = btrim(p_code)
+$$;
+
 -- Joins the caller to the group matching an invite code. Auto-joins with no
 -- approval step; safe to call again (no-op if already a member).
 create or replace function public.join_group_by_code(p_code text)

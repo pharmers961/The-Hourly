@@ -2,6 +2,10 @@
   "framework": "vite",
   "rewrites": [
     {
+      "source": "/join/:code",
+      "destination": "/api/join?code=:code"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

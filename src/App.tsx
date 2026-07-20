@@ -979,10 +979,24 @@ export default function App() {
 
   const handleCopyInviteLink = async () => {
     if (!selectedGroup) return;
-    const url = `${window.location.origin}/?join=${selectedGroup.inviteCode}`;
+    // The /join/<code> path is served by a link-preview endpoint so chat
+    // apps show the group's name instead of a generic card
+    const url = `${window.location.origin}/join/${selectedGroup.inviteCode}`;
+    const message = `Join our Hourly group — ${selectedGroup.name}`;
+
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: message, text: message, url });
+        return;
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') return;
+        // fall through to clipboard
+      }
+    }
+
     try {
-      await navigator.clipboard.writeText(url);
-      showToast('Invite link copied', 'success');
+      await navigator.clipboard.writeText(`${message}\n${url}`);
+      showToast('Invite copied — paste it anywhere', 'success');
     } catch (err) {
       console.error('Failed to copy invite link:', err);
       showToast('Failed to copy link.');
@@ -2318,7 +2332,7 @@ export default function App() {
 
                   <button onClick={handleCopyInviteLink} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity w-fit">
                     <Share size={14} />
-                    <span>Copy Invite Link</span>
+                    <span>Share Invite Link</span>
                   </button>
 
                   <button onClick={handleRegenerateInvite} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity w-fit">
