@@ -1601,6 +1601,33 @@ export default function App() {
     }
   };
 
+  // Save the currently open photo (own photos only) at full resolution,
+  // named by capture time. Fetched as a blob so it downloads instead of
+  // just navigating to the signed image URL.
+  const [isDownloadingPhoto, setIsDownloadingPhoto] = useState(false);
+  const handleDownloadPhoto = async () => {
+    if (!selectedPhoto || isDownloadingPhoto) return;
+    setIsDownloadingPhoto(true);
+    try {
+      const res = await fetch(selectedPhoto.imageUrl);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const d = new Date(selectedPhoto.timestamp);
+      const p = (n: number) => String(n).padStart(2, '0');
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `The-Hourly_${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}.jpg`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 60_000);
+      showToast('Photo saved', 'success');
+    } catch (err) {
+      console.error('Photo download failed:', err);
+      showToast(`Failed to save photo${errDetail(err)}`);
+    } finally {
+      setIsDownloadingPhoto(false);
+    }
+  };
+
   const handleSharePhoto = async () => {
     if (!selectedPhoto) return;
     const url = new URL(window.location.href);
@@ -2230,6 +2257,16 @@ export default function App() {
               >
                 <MapPin size={16} />
                 <span className="hidden md:inline">Map</span>
+              </button>
+            )}
+            {user && selectedPhoto.userId === user.uid && (
+              <button
+                onClick={handleDownloadPhoto}
+                disabled={isDownloadingPhoto}
+                className="flex items-center gap-2 font-sans text-[10px] uppercase tracking-[0.2em] hover:opacity-100 transition-opacity cursor-pointer opacity-60 disabled:opacity-30"
+              >
+                <Download size={16} className={isDownloadingPhoto ? 'animate-pulse' : ''} />
+                <span className="hidden md:inline">{isDownloadingPhoto ? 'Saving...' : 'Save'}</span>
               </button>
             )}
             <button
