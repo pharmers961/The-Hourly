@@ -2368,7 +2368,7 @@ export default function App() {
             )}
           </div>
 
-          <div className={`${isFullscreenPhoto ? 'w-full h-full flex flex-col items-center justify-center p-0' : 'max-w-4xl w-full flex flex-col items-center gap-8 overflow-y-auto max-h-[90vh] py-10 px-4'} relative transition-all duration-300`}>
+          <div className={`${isFullscreenPhoto ? 'w-full h-full flex flex-col items-center justify-center p-0' : 'max-w-4xl w-full flex flex-col items-center gap-4 overflow-y-auto max-h-[90vh] py-8 px-4'} relative transition-all duration-300`}>
             {!isFullscreenPhoto && (
               <div className="flex flex-col items-center gap-2 mb-2 text-center">
                 <span className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-60">Chronicle by</span>
@@ -2429,7 +2429,7 @@ export default function App() {
               {!isFullscreenPhoto && (
                 // In normal flow below the image (not overlapping its bottom
                 // edge) so the full photo stays visible
-                <div className="mt-3 mx-auto w-fit flex items-center gap-2 bg-card px-3 py-2 border-[0.5px] border-ink shadow-md rounded-full z-20">
+                <div className="mt-2 mx-auto w-fit flex items-center gap-2 bg-card px-3 py-2 border-[0.5px] border-ink shadow-md rounded-full z-20">
                 {['❤️', '🔥', '😂', '😮'].map(emoji => {
                   const count = (selectedPhoto.reactions?.[emoji] || []).length;
                   const hasReacted = (selectedPhoto.reactions?.[emoji] || []).includes(user?.uid || '');
@@ -2466,7 +2466,7 @@ export default function App() {
               </button>
             </div>
             
-            <div className="flex flex-col items-center gap-3 text-center transition-all duration-500 mt-4">
+            <div className="flex flex-col items-center gap-1.5 text-center transition-all duration-500">
               <div className="font-sans text-[10px] uppercase tracking-[0.2em] opacity-60">
                 {renderTime(selectedPhoto.timestamp)}
               </div>
@@ -2477,7 +2477,7 @@ export default function App() {
                 </div>
               )}
               {selectedPhoto.metadata && (
-                <div className="flex flex-wrap items-center justify-center gap-4 md:gap-8 mt-6 font-sans text-[10px] uppercase tracking-widest border-t-[0.5px] border-ink pt-6 w-full max-w-lg animate-in fade-in slide-in-from-top-2">
+                <div className="flex flex-wrap items-center justify-center gap-4 md:gap-8 mt-3 font-sans text-[10px] uppercase tracking-widest border-t-[0.5px] border-ink pt-4 w-full max-w-lg animate-in fade-in slide-in-from-top-2">
                   {selectedPhoto.metadata.location && (
                     <div className="flex items-center gap-2">
                       {selectedPhoto.metadata.lat && selectedPhoto.metadata.lng ? (
@@ -2517,8 +2517,8 @@ export default function App() {
               )}
 
               {/* Comments Section */}
-              <div className="w-full max-w-md mt-6 text-left">
-                <div className="flex flex-col gap-3 mb-6">
+              <div className="w-full max-w-md mt-3 text-left">
+                <div className="flex flex-col gap-2 mb-4">
                   {(selectedPhoto.comments || []).map(comment => (
                     <div key={comment.id} className="bg-card p-3 border-[0.5px] border-ink shadow-sm flex flex-col gap-1 relative group">
                       <div className="flex items-center justify-between">
