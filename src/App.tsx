@@ -507,7 +507,9 @@ export default function App() {
     if (!profile) {
       setGroups([]);
       setGroupsLoaded(false);
-      setSelectedGroupId(null);
+      // Deliberately NOT clearing selectedGroupId: this branch also runs at
+      // boot before auth resolves, and wiping it here is what made a reload
+      // forget which group was open. refreshGroups validates it anyway.
       return;
     }
 
@@ -2026,12 +2028,12 @@ export default function App() {
             
             {isSelectedDateToday && (
               <span className="print:hidden border-l border-ink border-opacity-20 pl-3">
-                {currentTime.toLocaleTimeString('en-US', { 
-                  hour12: activeUsers.find(u => u.id === user?.uid)?.settings?.timeFormat !== '24h', 
-                  hour: '2-digit', 
-                  minute: '2-digit', 
-                  ...(referenceTimezone ? { timeZone: referenceTimezone } : {}) 
-                })} 
+                {currentTime.toLocaleTimeString('en-US', {
+                  hour12: activeUsers.find(u => u.id === user?.uid)?.settings?.timeFormat !== '24h',
+                  hour: 'numeric',
+                  minute: '2-digit',
+                  ...(referenceTimezone ? { timeZone: referenceTimezone } : {})
+                })}
               </span>
             )}
             <span className="hidden print:inline">{selectedDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })} Chronicle</span>
@@ -2111,7 +2113,7 @@ export default function App() {
         >
           {/* Column Headers (X-Axis: Names) */}
           <div className="sticky top-0 z-20 bg-paper pt-6 flex gap-2 md:gap-4 mb-4 border-b-[0.5px] border-ink pb-2 print:relative print:bg-card print:border-black print:pt-4">
-            <div className="sticky left-0 z-30 w-14 shrink-0 bg-paper before:absolute before:inset-y-0 before:-left-2 before:w-2 md:before:-left-10 md:before:w-10 before:bg-paper print:before:hidden font-sans text-[10px] uppercase tracking-widest self-end print:bg-card print:text-black">Time</div>
+            <div className="sticky left-0 z-30 w-14 shrink-0 bg-paper shadow-[6px_0_8px_-6px_rgba(0,0,0,0.35)] print:shadow-none before:absolute before:inset-y-0 before:-left-2 before:w-2 md:before:-left-10 md:before:w-10 before:bg-paper print:before:hidden font-sans text-[10px] uppercase tracking-widest self-end print:bg-card print:text-black">Time</div>
             <div className="grid gap-2 md:gap-4 flex-1 min-w-0" style={gridStyle}>
             {columnUsers.map(sibling => {
               // Split on any whitespace (incl. non-breaking spaces) so every
@@ -2157,7 +2159,7 @@ export default function App() {
                     isCurrent ? 'outline outline-1 outline-offset-4 outline-gold bg-gold/5 print:outline-none print:bg-transparent' : ''
                   }`}
                 >
-                  <div className="sticky left-0 z-10 w-14 shrink-0 flex flex-col justify-center border-r-[0.5px] border-ink border-opacity-10 bg-paper before:absolute before:inset-y-0 before:-left-2 before:w-2 md:before:-left-10 md:before:w-10 before:bg-paper print:before:hidden print:border-black print:border-opacity-20 print:bg-card">
+                  <div className="sticky left-0 z-10 w-14 shrink-0 flex flex-col justify-center border-r-[0.5px] border-ink border-opacity-10 bg-paper shadow-[6px_0_8px_-6px_rgba(0,0,0,0.35)] print:shadow-none before:absolute before:inset-y-0 before:-left-2 before:w-2 md:before:-left-10 md:before:w-10 before:bg-paper print:before:hidden print:border-black print:border-opacity-20 print:bg-card">
                     <span className={`text-lg md:text-xl font-light italic leading-tight whitespace-nowrap print:text-2xl print:text-black ${isCurrent ? 'text-gold print:text-black' : ''}`}>
                       {slot.displayTime}
                     </span>
