@@ -2,6 +2,7 @@
 // app's existing Photo/User shapes so the UI is agnostic of the backend.
 import { supabase, vapidPublicKey } from './supabase';
 import { Photo, User as AppUser, PhotoMetadata, UserSettings, Group } from './types';
+import { isNative, authRedirectUrl, openAuthUrl } from './native';
 
 interface ProfileRow {
   id: string;
@@ -164,21 +165,26 @@ export async function ensureProfile(timezone: string, name?: string): Promise<Ap
 }
 
 export async function sendMagicLink(email: string): Promise<void> {
+  // On iOS the redirect is a thehourly:// deep link handled in native.ts;
+  // on the web it's this origin, as before.
   const { error } = await supabase.auth.signInWithOtp({
     email,
-    options: { emailRedirectTo: window.location.origin },
+    options: { emailRedirectTo: authRedirectUrl() },
   });
   if (error) throw error;
 }
 
 export async function signInWithGoogle(): Promise<void> {
-  // On success this navigates the browser away to Google's consent screen;
-  // there is nothing to await after that beyond surfacing a setup error
-  const { error } = await supabase.auth.signInWithOAuth({
+  // On the web this navigates the browser away to Google's consent screen.
+  // On iOS the consent screen must open in the system browser instead of the
+  // app's webview (Google blocks embedded webviews), so we take the URL and
+  // open it ourselves; the thehourly:// redirect brings the session back.
+  const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
-    options: { redirectTo: window.location.origin },
+    options: { redirectTo: authRedirectUrl(), skipBrowserRedirect: isNative },
   });
   if (error) throw error;
+  if (isNative && data?.url) await openAuthUrl(data.url);
 }
 
 export async function updateLastActive(profileId: string): Promise<void> {

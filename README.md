@@ -18,3 +18,9 @@ View your app in AI Studio: https://ai.studio/apps/530ce651-c22d-48f3-af78-3cb6c
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+## iOS app (TestFlight)
+
+The app ships to iOS as a Capacitor-wrapped native app — the Xcode project
+lives in `ios/`. See [docs/ios-testflight.md](docs/ios-testflight.md) for
+the full build-and-upload guide.

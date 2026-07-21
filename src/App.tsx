@@ -5,6 +5,7 @@ import { toJpeg } from 'html-to-image';
 import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImageToBlob, makeThumbnailBlob, getRelativeTime, extractExifGps, timezoneAbbreviation, isQuietHours } from './utils';
 import { saveQueuedCapture, listQueuedCaptures, removeQueuedCapture, looksOffline, PendingCapture } from './offlineQueue';
 import { supabase, isSupabaseConfigured } from './supabase';
+import { shareOrigin } from './native';
 import * as api from './api';
 import { Photo, User as AppUser, UserSettings, Group } from './types';
 
@@ -1366,8 +1367,9 @@ export default function App() {
   const handleCopyInviteLink = async () => {
     if (!selectedGroup) return;
     // The /join/<code> path is served by a link-preview endpoint so chat
-    // apps show the group's name instead of a generic card
-    const url = `${window.location.origin}/join/${selectedGroup.inviteCode}`;
+    // apps show the group's name instead of a generic card. In the native
+    // app the webview origin isn't a real URL, so always share the web one.
+    const url = `${shareOrigin()}/join/${selectedGroup.inviteCode}`;
     const message = `Join our Hourly group — ${selectedGroup.name}`;
 
     if (navigator.share) {

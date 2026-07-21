@@ -6,3 +6,12 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# iOS (Capacitor) — generated at build time by `cap sync` / Xcode
+ios/App/Pods/
+ios/App/App/public/
+ios/App/App/capacitor.config.json
+ios/App/output/
+ios/DerivedData/
+xcuserdata/
+*.xcuserstate
