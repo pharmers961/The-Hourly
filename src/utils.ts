@@ -1,25 +1,32 @@
 import { Photo, TimeSlot, User, PhotoMetadata } from './types';
 
-// Extract GPS coordinates from a JPEG's EXIF data, so the photo's actual
-// capture location is used even when it was taken earlier or somewhere else.
-export function extractExifGps(file: File): Promise<{ lat: number; lng: number } | null> {
+// Extract GPS coordinates and the original capture time from a JPEG's EXIF
+// data, so a photo picked from the library carries its actual where and when
+// — not the device's location and clock at upload time.
+export interface ExifData {
+  gps: { lat: number; lng: number } | null;
+  takenAt: Date | null;
+}
+
+export function extractExifData(file: File): Promise<ExifData> {
+  const empty: ExifData = { gps: null, takenAt: null };
   return new Promise((resolve) => {
     const reader = new FileReader();
-    reader.onerror = () => resolve(null);
+    reader.onerror = () => resolve(empty);
     reader.onload = () => {
       try {
         const view = new DataView(reader.result as ArrayBuffer);
-        if (view.getUint16(0) !== 0xFFD8) return resolve(null); // not a JPEG
+        if (view.getUint16(0) !== 0xFFD8) return resolve(empty); // not a JPEG
         let offset = 2;
         while (offset + 4 <= view.byteLength) {
           const marker = view.getUint16(offset);
-          if (marker === 0xFFE1) return resolve(parseExifGps(view, offset + 4));
+          if (marker === 0xFFE1) return resolve(parseExif(view, offset + 4));
           if ((marker & 0xFF00) !== 0xFF00) break;
           offset += 2 + view.getUint16(offset + 2);
         }
-        resolve(null);
+        resolve(empty);
       } catch {
-        resolve(null);
+        resolve(empty);
       }
     };
     // EXIF lives in the first segments of the file
@@ -27,51 +34,94 @@ export function extractExifGps(file: File): Promise<{ lat: number; lng: number }
   });
 }
 
-function parseExifGps(view: DataView, start: number): { lat: number; lng: number } | null {
-  if (view.getUint32(start) !== 0x45786966) return null; // "Exif"
+// EXIF datetimes are "YYYY:MM:DD HH:MM:SS" in the capturing device's local
+// time; build a local Date from the components.
+function parseExifDate(s: string | null): Date | null {
+  if (!s) return null;
+  const m = s.match(/^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+  if (!m) return null;
+  const d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+  return isNaN(d.getTime()) || d.getFullYear() < 1990 ? null : d;
+}
+
+function parseExif(view: DataView, start: number): ExifData {
+  const empty: ExifData = { gps: null, takenAt: null };
+  if (view.getUint32(start) !== 0x45786966) return empty; // "Exif"
   const tiff = start + 6;
   const little = view.getUint16(tiff) === 0x4949;
   const u16 = (o: number) => view.getUint16(o, little);
   const u32 = (o: number) => view.getUint32(o, little);
 
-  const ifd0 = tiff + u32(tiff + 4);
-  let gpsIfd = 0;
-  for (let i = 0, n = u16(ifd0); i < n; i++) {
-    const entry = ifd0 + 2 + i * 12;
-    if (u16(entry) === 0x8825) {
-      gpsIfd = tiff + u32(entry + 8);
-      break;
+  // ASCII values longer than 4 bytes live at an offset; shorter ones inline
+  const readAscii = (entry: number): string | null => {
+    const count = u32(entry + 4);
+    if (count === 0) return null;
+    const at = count <= 4 ? entry + 8 : tiff + u32(entry + 8);
+    let s = '';
+    for (let i = 0; i < Math.min(count, 32); i++) {
+      const ch = view.getUint8(at + i);
+      if (ch === 0) break;
+      s += String.fromCharCode(ch);
     }
-  }
-  if (!gpsIfd) return null;
-
-  // Degrees/minutes/seconds are stored as three rationals (numerator/denominator pairs)
-  const readRationals = (entry: number) => {
-    const valueOffset = tiff + u32(entry + 8);
-    const values: number[] = [];
-    for (let i = 0; i < 3; i++) {
-      values.push(u32(valueOffset + i * 8) / u32(valueOffset + i * 8 + 4));
-    }
-    return values;
+    return s;
   };
 
-  let latRef = '', lngRef = '';
-  let latVals: number[] | null = null, lngVals: number[] | null = null;
-  for (let i = 0, n = u16(gpsIfd); i < n; i++) {
-    const entry = gpsIfd + 2 + i * 12;
+  const ifd0 = tiff + u32(tiff + 4);
+  let gpsIfd = 0;
+  let exifIfd = 0;
+  let dateTimeFallback: string | null = null; // IFD0 DateTime (last modified)
+  for (let i = 0, n = u16(ifd0); i < n; i++) {
+    const entry = ifd0 + 2 + i * 12;
     const tag = u16(entry);
-    if (tag === 1) latRef = String.fromCharCode(view.getUint8(entry + 8));
-    else if (tag === 2) latVals = readRationals(entry);
-    else if (tag === 3) lngRef = String.fromCharCode(view.getUint8(entry + 8));
-    else if (tag === 4) lngVals = readRationals(entry);
+    if (tag === 0x8825) gpsIfd = tiff + u32(entry + 8);
+    else if (tag === 0x8769) exifIfd = tiff + u32(entry + 8);
+    else if (tag === 0x0132) dateTimeFallback = readAscii(entry);
   }
-  if (!latVals || !lngVals) return null;
 
-  const toDecimal = ([d, m, s]: number[]) => d + m / 60 + s / 3600;
-  const lat = toDecimal(latVals) * (latRef === 'S' ? -1 : 1);
-  const lng = toDecimal(lngVals) * (lngRef === 'W' ? -1 : 1);
-  if (!isFinite(lat) || !isFinite(lng) || (lat === 0 && lng === 0)) return null;
-  return { lat, lng };
+  // DateTimeOriginal (the shutter moment) lives in the Exif sub-IFD
+  let dateTimeOriginal: string | null = null;
+  if (exifIfd) {
+    for (let i = 0, n = u16(exifIfd); i < n; i++) {
+      const entry = exifIfd + 2 + i * 12;
+      if (u16(entry) === 0x9003) {
+        dateTimeOriginal = readAscii(entry);
+        break;
+      }
+    }
+  }
+  const takenAt = parseExifDate(dateTimeOriginal || dateTimeFallback);
+
+  let gps: ExifData['gps'] = null;
+  if (gpsIfd) {
+    // Degrees/minutes/seconds are stored as three rationals (numerator/denominator pairs)
+    const readRationals = (entry: number) => {
+      const valueOffset = tiff + u32(entry + 8);
+      const values: number[] = [];
+      for (let i = 0; i < 3; i++) {
+        values.push(u32(valueOffset + i * 8) / u32(valueOffset + i * 8 + 4));
+      }
+      return values;
+    };
+
+    let latRef = '', lngRef = '';
+    let latVals: number[] | null = null, lngVals: number[] | null = null;
+    for (let i = 0, n = u16(gpsIfd); i < n; i++) {
+      const entry = gpsIfd + 2 + i * 12;
+      const tag = u16(entry);
+      if (tag === 1) latRef = String.fromCharCode(view.getUint8(entry + 8));
+      else if (tag === 2) latVals = readRationals(entry);
+      else if (tag === 3) lngRef = String.fromCharCode(view.getUint8(entry + 8));
+      else if (tag === 4) lngVals = readRationals(entry);
+    }
+    if (latVals && lngVals) {
+      const toDecimal = ([d, m, s]: number[]) => d + m / 60 + s / 3600;
+      const lat = toDecimal(latVals) * (latRef === 'S' ? -1 : 1);
+      const lng = toDecimal(lngVals) * (lngRef === 'W' ? -1 : 1);
+      if (isFinite(lat) && isFinite(lng) && !(lat === 0 && lng === 0)) gps = { lat, lng };
+    }
+  }
+
+  return { gps, takenAt };
 }
 
 // Helper function to fetch environmental metadata at the moment of capture.

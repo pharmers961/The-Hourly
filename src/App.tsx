@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { Camera, Thermometer, Activity, LogIn, LogOut, Bell, Download, Globe, X, Trash2, MapPin, Droplets, Share, ChevronLeft, ChevronRight, Settings, Heart, Calendar, Image as ImageIcon, Maximize, Clock, RefreshCw, Newspaper, History, Flag } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import { toJpeg } from 'html-to-image';
-import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImageToBlob, makeThumbnailBlob, getRelativeTime, extractExifGps, timezoneAbbreviation, isQuietHours } from './utils';
+import { groupPhotosByHour, fetchEnvironmentalMetadata, compressImageToBlob, makeThumbnailBlob, getRelativeTime, extractExifData, timezoneAbbreviation, isQuietHours } from './utils';
 import { saveQueuedCapture, listQueuedCaptures, removeQueuedCapture, looksOffline, PendingCapture } from './offlineQueue';
 import { supabase, isSupabaseConfigured } from './supabase';
 import * as api from './api';
@@ -1161,17 +1161,20 @@ export default function App() {
     }
     setIsCapturing(true);
     try {
-      const takenAt = new Date().toISOString();
       const imageBlob = await compressImageToBlob(file);
       const thumbBlob = await makeThumbnailBlob(file).catch(() => null);
       const userDisplayLocation = activeUsers.find(u => u.id === profileId)?.settings?.displayLocation;
-      // Prefer the GPS coordinates embedded in the photo itself; fall back to
-      // the device's current position inside fetchEnvironmentalMetadata.
-      const exifCoords = await extractExifGps(file);
-      const metadata = await fetchEnvironmentalMetadata(userDisplayLocation || undefined, exifCoords || undefined);
+      // Prefer what's embedded in the photo itself: its GPS coordinates, and
+      // its original capture time — so a photo picked from the library files
+      // into the hour it was actually taken, not the hour it was uploaded.
+      const exif = await extractExifData(file);
+      const now = new Date();
+      const takenDate = exif.takenAt && exif.takenAt < now ? exif.takenAt : now;
+      const takenAt = takenDate.toISOString();
+      const metadata = await fetchEnvironmentalMetadata(userDisplayLocation || undefined, exif.gps || undefined);
 
       try {
-        await api.uploadPhotoToGroups(profileId, imageBlob, thumbBlob, metadata, groupIds);
+        await api.uploadPhotoToGroups(profileId, imageBlob, thumbBlob, metadata, groupIds, { takenAt });
       } catch (err) {
         if (!looksOffline(err)) throw err;
         // No connection: park the finished capture and let the retry loop
@@ -1185,7 +1188,14 @@ export default function App() {
       setHasPostedThisHour(true);
       setHasEverPosted(true);
       await refreshData();
-      showToast('Moment captured', 'success');
+      const sameSlot =
+        takenDate.toDateString() === now.toDateString() && takenDate.getHours() === now.getHours();
+      showToast(
+        sameSlot
+          ? 'Moment captured'
+          : `Filed under ${takenDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}, ${takenDate.toLocaleTimeString('en-US', { hour: 'numeric', hour12: true })}`,
+        'success'
+      );
     } catch (err) {
       console.error('Capture error:', err);
       showToast(`Photo failed to upload${errDetail(err)}`);

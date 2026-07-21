@@ -245,10 +245,10 @@ $$;
 drop function if exists public.create_photo(text, jsonb, uuid[]);
 drop function if exists public.create_photo(text, jsonb, uuid[], text);
 
--- p_taken_at: the offline capture queue uploads photos after the fact and
--- passes the original capture time so the photo lands in the hour it was
--- actually taken. Clamped to the recent past so a client can't post into the
--- future or rewrite ancient history.
+-- p_taken_at: the original capture time (from EXIF or the offline capture
+-- queue), so a photo lands in the hour it was actually taken rather than the
+-- hour it was uploaded. Clamped to the past year so a client can't post into
+-- the future or rewrite ancient history.
 create or replace function public.create_photo(
   p_image_path text,
   p_metadata jsonb,
@@ -266,8 +266,8 @@ declare
   v_gid uuid;
   v_taken_at timestamptz := least(coalesce(p_taken_at, now()), now());
 begin
-  if v_taken_at < now() - interval '7 days' then
-    v_taken_at := now() - interval '7 days';
+  if v_taken_at < now() - interval '365 days' then
+    v_taken_at := now() - interval '365 days';
   end if;
 
   if auth.uid() is null then
