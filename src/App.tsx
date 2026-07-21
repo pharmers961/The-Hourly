@@ -1193,6 +1193,40 @@ export default function App() {
     setDismissedNudgeHour(currentHourKey);
   };
 
+  // Settings-menu nudge: unlike the missed-sync toast (which only exists 30+
+  // minutes into an hour), this nudges everyone in the current group who
+  // hasn't posted this hour, whenever it's tapped — and says why when there's
+  // no one to nudge instead of silently doing nothing.
+  const handleNudgeGroup = async () => {
+    if (!user) return;
+    const currentHourKey = new Date(currentTime.getFullYear(), currentTime.getMonth(), currentTime.getDate(), currentTime.getHours()).toISOString();
+    const currentSlot = timeSlots.find(s => s.hourKey === currentHourKey);
+    const candidates = activeUsers.filter(s => s.id !== user.uid && !currentSlot?.photos[s.id]);
+    if (candidates.length === 0) {
+      showToast('Everyone has already posted this hour', 'success');
+      return;
+    }
+    const reachable = candidates.filter(s => s.settings?.notifyReminders !== false && !isQuietHours(s.timezone));
+    if (reachable.length === 0) {
+      showToast("No one to nudge right now — it's quiet hours (or reminders are off) for everyone who hasn't posted.");
+      return;
+    }
+    setIsNudging(true);
+    try {
+      await api.sendNudges(user.uid, reachable.map(s => s.id), currentHourKey);
+      showToast(
+        reachable.length === 1
+          ? `Nudge sent to ${reachable[0].name.split(' ')[0]}`
+          : `Nudge sent to ${reachable.length} people`,
+        'success'
+      );
+    } catch (err) {
+      console.error('Failed to send nudges:', err);
+      showToast(`Failed to send nudge${errDetail(err)}`);
+    }
+    setTimeout(() => setIsNudging(false), 2000);
+  };
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const libraryInputRef = useRef<HTMLInputElement>(null);
 
@@ -3207,9 +3241,9 @@ export default function App() {
               {openSettingsSection === 'notifications' && (
               <div className="flex flex-col gap-4 py-4">
                 <div className="flex flex-col gap-3">
-                  <button onClick={handleNudge} disabled={isNudging} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity disabled:opacity-30 w-fit">
+                  <button onClick={handleNudgeGroup} disabled={isNudging} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity disabled:opacity-30 w-fit">
                     <Bell size={14} className={isNudging ? 'animate-bounce text-gold' : ''} />
-                    <span>Send Nudge to Family</span>
+                    <span>Send Nudge to {selectedGroup?.name || 'Group'}</span>
                   </button>
 
                   {notificationPermission === 'default' && (
