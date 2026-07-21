@@ -69,6 +69,11 @@ export default function App() {
   // Multi-group capture picker
   const [pendingCaptureFile, setPendingCaptureFile] = useState<File | null>(null);
   const [captureGroupIds, setCaptureGroupIds] = useState<Set<string>>(new Set());
+  // When the picked photo has no EXIF date: the user's manual "taken at"
+  // (datetime-local string). Null = no time question needed.
+  const [pendingTakenAtInput, setPendingTakenAtInput] = useState<string | null>(null);
+  // When it does have one: shown as a "will be filed under ..." note
+  const [pendingExifDate, setPendingExifDate] = useState<Date | null>(null);
 
   // Preview of the photo about to be shared, shown in the group picker
   const pendingPreviewUrl = useMemo(
@@ -1153,12 +1158,13 @@ export default function App() {
   };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const libraryInputRef = useRef<HTMLInputElement>(null);
 
   const handleCaptureClick = () => {
     fileInputRef.current?.click();
   };
 
-  const performCapture = async (file: File, profileId: string, groupIds: string[]) => {
+  const performCapture = async (file: File, profileId: string, groupIds: string[], takenAtOverride?: Date) => {
     if (groupIds.length === 0) {
       showToast('Select at least one group to share this to.');
       return;
@@ -1171,9 +1177,16 @@ export default function App() {
       // Prefer what's embedded in the photo itself: its GPS coordinates, and
       // its original capture time — so a photo picked from the library files
       // into the hour it was actually taken, not the hour it was uploaded.
+      // takenAtOverride is the user's manual answer when the photo carries no
+      // EXIF date (screenshots, WhatsApp-stripped images).
       const exif = await extractExifData(file);
       const now = new Date();
-      const takenDate = exif.takenAt && exif.takenAt < now ? exif.takenAt : now;
+      const takenDate =
+        takenAtOverride && takenAtOverride < now
+          ? takenAtOverride
+          : exif.takenAt && exif.takenAt < now
+            ? exif.takenAt
+            : now;
       const takenAt = takenDate.toISOString();
       const metadata = await fetchEnvironmentalMetadata(userDisplayLocation || undefined, exif.gps || undefined);
 
@@ -1218,27 +1231,52 @@ export default function App() {
     }
   };
 
-  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  // Local-time value for <input type="datetime-local">
+  const toDateTimeLocal = (d: Date) => {
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  };
+
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>, source: 'camera' | 'library') => {
     const file = event.target.files?.[0];
     if (fileInputRef.current) fileInputRef.current.value = '';
+    if (libraryInputRef.current) libraryInputRef.current.value = '';
     if (!file || !user) return;
 
-    if (groups.length <= 1) {
-      // Only one group to share to (or none, which performCapture will
-      // reject with a clear message) — skip the picker for the common case
+    // A library pick without an embedded EXIF date (screenshots, images saved
+    // from WhatsApp) can't be auto-filed — ask when it was taken instead of
+    // silently dumping it into the current hour.
+    const exif = await extractExifData(file);
+    const hasExifDate = !!exif.takenAt && exif.takenAt < new Date();
+    const needsTime = source === 'library' && !hasExifDate;
+
+    if (groups.length <= 1 && !needsTime) {
+      // Nothing to ask (single group, timestamp known) — skip the dialog
       await performCapture(file, user.uid, groups.map(g => g.id));
       return;
     }
 
-    // Multiple groups: let the user choose before uploading — everything
-    // starts checked, unticking is the exception
     setPendingCaptureFile(file);
     setCaptureGroupIds(new Set(groups.map(g => g.id)));
+    setPendingExifDate(hasExifDate ? exif.takenAt : null);
+    if (needsTime) {
+      // The file's modified time is often the real capture time for library
+      // photos; fall back to now
+      const guess = file.lastModified && file.lastModified < Date.now() - 60_000 ? new Date(file.lastModified) : new Date();
+      setPendingTakenAtInput(toDateTimeLocal(guess > new Date() ? new Date() : guess));
+    } else {
+      setPendingTakenAtInput(null);
+    }
   };
 
   const handleConfirmCaptureGroups = () => {
     if (!pendingCaptureFile || !user) return;
-    performCapture(pendingCaptureFile, user.uid, Array.from(captureGroupIds));
+    let override: Date | undefined;
+    if (pendingTakenAtInput) {
+      const picked = new Date(pendingTakenAtInput);
+      if (!isNaN(picked.getTime())) override = picked > new Date() ? new Date() : picked;
+    }
+    performCapture(pendingCaptureFile, user.uid, Array.from(captureGroupIds), override);
   };
 
   const handleSaveSettings = async (updates: Partial<AppUser['settings']>) => {
@@ -2168,26 +2206,45 @@ export default function App() {
         </div>
       )}
 
-      {/* Floating Action Button */}
-      {user && !hasPostedThisHour && groups.length > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 print:hidden">
-          <input 
-            type="file" 
-            accept="image/*" 
-            capture="environment" 
-            ref={fileInputRef} 
-            onChange={handleFileChange} 
-            className="hidden" 
+      {/* Capture buttons: camera (this hour) + library (backdated moments).
+          The library button stays available after posting this hour, since a
+          past photo files into its own slot, not the current one. */}
+      {user && groups.length > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 print:hidden flex items-stretch gap-2">
+          <input
+            type="file"
+            accept="image/*"
+            capture="environment"
+            ref={fileInputRef}
+            onChange={(e) => handleFileChange(e, 'camera')}
+            className="hidden"
           />
-          <button 
-            onClick={handleCaptureClick}
+          <input
+            type="file"
+            accept="image/*"
+            ref={libraryInputRef}
+            onChange={(e) => handleFileChange(e, 'library')}
+            className="hidden"
+          />
+          {!hasPostedThisHour && (
+            <button
+              onClick={handleCaptureClick}
+              disabled={isCapturing}
+              className="bg-ink text-paper px-8 py-4 rounded-none flex items-center space-x-3 hover:opacity-90 transition-all shadow-2xl hover:scale-105 active:scale-95 disabled:opacity-50 disabled:hover:scale-100 cursor-pointer disabled:cursor-wait"
+            >
+              <Camera size={16} strokeWidth={1.5} className={isCapturing ? "animate-pulse" : ""} />
+              <span className="text-[10px] font-sans font-medium tracking-[0.2em] uppercase">
+                {isCapturing ? 'Capturing...' : 'Capture'}
+              </span>
+            </button>
+          )}
+          <button
+            onClick={() => libraryInputRef.current?.click()}
             disabled={isCapturing}
-            className="bg-ink text-paper px-8 py-4 rounded-none flex items-center space-x-3 hover:opacity-90 transition-all shadow-2xl hover:scale-105 active:scale-95 disabled:opacity-50 disabled:hover:scale-100 cursor-pointer disabled:cursor-wait"
+            title="Upload a photo from your library"
+            className="bg-card/90 backdrop-blur-sm border-[0.5px] border-ink text-ink px-4 py-4 rounded-none flex items-center hover:bg-card transition-all shadow-2xl hover:scale-105 active:scale-95 disabled:opacity-50 cursor-pointer"
           >
-            <Camera size={16} strokeWidth={1.5} className={isCapturing ? "animate-pulse" : ""} />
-            <span className="text-[10px] font-sans font-medium tracking-[0.2em] uppercase">
-              {isCapturing ? 'Capturing...' : 'Capture'}
-            </span>
+            <ImageIcon size={16} strokeWidth={1.5} />
           </button>
         </div>
       )}
@@ -2542,31 +2599,57 @@ export default function App() {
       {pendingCaptureFile && (
         <div className="fixed inset-0 z-[250] bg-black/40 flex items-center justify-center p-4">
           <div className="bg-paper p-6 md:p-8 w-full max-w-sm shadow-2xl border-[0.5px] border-ink animate-in fade-in zoom-in-95 duration-200">
-            <h2 className="font-serif text-xl italic mb-1">Share to</h2>
-            <p className="font-sans text-[10px] uppercase tracking-widest opacity-50 mb-4">Choose which group(s) see this moment</p>
+            <h2 className="font-serif text-xl italic mb-1">Share this moment</h2>
+            {groups.length > 1 && (
+              <p className="font-sans text-[10px] uppercase tracking-widest opacity-50 mb-4">Choose which group(s) see it</p>
+            )}
             {pendingPreviewUrl && (
-              <div className="mb-5 bg-card border-[0.5px] border-ink border-opacity-20 p-1 w-28 h-28 mx-auto">
+              <div className="my-4 bg-card border-[0.5px] border-ink border-opacity-20 p-1 w-28 h-28 mx-auto">
                 <img src={pendingPreviewUrl} alt="Photo to share" className="w-full h-full object-cover" />
               </div>
             )}
-            <div className="flex flex-col gap-3 mb-8">
-              {groups.map(g => (
-                <label key={g.id} className="flex items-center gap-3 cursor-pointer font-sans text-sm">
-                  <input
-                    type="checkbox"
-                    checked={captureGroupIds.has(g.id)}
-                    onChange={(e) => {
-                      setCaptureGroupIds(prev => {
-                        const next = new Set(prev);
-                        if (e.target.checked) next.add(g.id); else next.delete(g.id);
-                        return next;
-                      });
-                    }}
-                  />
-                  {g.name}
-                </label>
-              ))}
-            </div>
+            {groups.length > 1 && (
+              <div className="flex flex-col gap-3 mb-6">
+                {groups.map(g => (
+                  <label key={g.id} className="flex items-center gap-3 cursor-pointer font-sans text-sm">
+                    <input
+                      type="checkbox"
+                      checked={captureGroupIds.has(g.id)}
+                      onChange={(e) => {
+                        setCaptureGroupIds(prev => {
+                          const next = new Set(prev);
+                          if (e.target.checked) next.add(g.id); else next.delete(g.id);
+                          return next;
+                        });
+                      }}
+                    />
+                    {g.name}
+                  </label>
+                ))}
+              </div>
+            )}
+            {pendingTakenAtInput !== null && (
+              <div className="flex flex-col gap-2 mb-6">
+                <label className="font-sans text-[10px] uppercase tracking-widest opacity-60">When was this taken?</label>
+                <input
+                  type="datetime-local"
+                  value={pendingTakenAtInput}
+                  max={toDateTimeLocal(new Date())}
+                  onChange={(e) => setPendingTakenAtInput(e.target.value)}
+                  className="bg-transparent border-b-[0.5px] border-ink px-2 py-2 font-sans text-sm outline-none"
+                />
+                <p className="font-sans text-[9px] uppercase tracking-widest opacity-40 leading-relaxed">
+                  This photo has no embedded date — set when it was taken and it will file into that hour.
+                </p>
+              </div>
+            )}
+            {pendingExifDate && (
+              <p className="font-sans text-[9px] uppercase tracking-widest opacity-50 mb-6 text-center">
+                Will be filed under {pendingExifDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })},{' '}
+                {pendingExifDate.toLocaleTimeString('en-US', { hour: 'numeric', hour12: true })}
+              </p>
+            )}
+            <div className="mb-2" />
             <div className="flex gap-3">
               <button
                 onClick={() => setPendingCaptureFile(null)}
