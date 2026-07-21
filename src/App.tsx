@@ -1076,9 +1076,13 @@ export default function App() {
       if (notificationPermission === 'granted') {
         void maybeSendDailyReminder(now);
       }
+
+      // The 'online' event is unreliable on phones — also retry queued
+      // captures on the minute tick (no-op when the queue is empty)
+      void drainOfflineQueue();
     }, 60000);
     return () => clearInterval(timer);
-  }, [notificationPermission, refreshHasPostedThisHour, profile?.id]);
+  }, [notificationPermission, refreshHasPostedThisHour, profile?.id, drainOfflineQueue]);
 
   const handleGoogleLogin = async () => {
     try {
@@ -1173,13 +1177,22 @@ export default function App() {
       const takenAt = takenDate.toISOString();
       const metadata = await fetchEnvironmentalMetadata(userDisplayLocation || undefined, exif.gps || undefined);
 
+      // Stable id up front: it names the storage file AND the queue entry, so
+      // a retry after a half-finished attempt overwrites rather than duplicates.
+      const captureId = crypto.randomUUID();
       try {
-        await api.uploadPhotoToGroups(profileId, imageBlob, thumbBlob, metadata, groupIds, { takenAt });
+        // Phones often report "online" on a dead connection, where requests
+        // hang instead of failing — race a timeout so the capture falls back
+        // to the offline queue instead of spinning forever.
+        await Promise.race([
+          api.uploadPhotoToGroups(profileId, imageBlob, thumbBlob, metadata, groupIds, { takenAt, baseName: captureId }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('upload timed out')), 25_000)),
+        ]);
       } catch (err) {
         if (!looksOffline(err)) throw err;
         // No connection: park the finished capture and let the retry loop
         // deliver it (with its original capture time) when we're back online
-        await saveQueuedCapture({ id: crypto.randomUUID(), imageBlob, thumbBlob, metadata, groupIds, takenAt, attempts: 0 });
+        await saveQueuedCapture({ id: captureId, imageBlob, thumbBlob, metadata, groupIds, takenAt, attempts: 0 });
         setHasPostedThisHour(true);
         setHasEverPosted(true);
         showToast("You're offline — moment saved, it will upload automatically", 'success');

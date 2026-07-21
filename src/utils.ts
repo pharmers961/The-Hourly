@@ -137,15 +137,23 @@ export async function fetchEnvironmentalMetadata(fallbackLocation?: string, coor
     location: fallbackLocation || 'Unknown Location',
   };
 
+  // A dead connection often hangs rather than failing — bound every lookup
+  // so a capture with no data degrades to defaults in seconds, not minutes.
+  const fetchWithTimeout = (url: string, ms = 6000): Promise<Response> => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(timer));
+  };
+
   const buildFromCoords = async (latitude: number, longitude: number): Promise<PhotoMetadata> => {
     // Fetch weather from open-meteo
-    const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m`);
+    const weatherRes = await fetchWithTimeout(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m`);
     const weatherData = await weatherRes.json();
 
     let city: string | undefined;
     try {
       // Fetch location name from openstreetmap nominatim
-      const geoRes = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`);
+      const geoRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`);
       const geoData = await geoRes.json();
       city = geoData.address?.city || geoData.address?.town || geoData.address?.village || geoData.address?.county;
     } catch (e) {

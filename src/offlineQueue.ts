@@ -59,11 +59,12 @@ export function removeQueuedCapture(id: string): Promise<void> {
 // server rejection (which would fail identically on every retry).
 export function looksOffline(err: unknown): boolean {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
+  if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) return true;
   const message =
     err instanceof Error
       ? err.message
       : typeof err === 'object' && err && 'message' in err
         ? String((err as { message: unknown }).message)
         : String(err);
-  return /failed to fetch|load failed|networkerror|network error|network request failed|fetch failed|timed? ?out/i.test(message);
+  return /failed to fetch|load failed|networkerror|network error|network request failed|fetch failed|timed? ?out|aborted|err_internet|err_network|socket|connection (?:closed|reset|refused)/i.test(message);
 }
