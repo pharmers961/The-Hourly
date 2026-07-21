@@ -864,10 +864,27 @@ export default function App() {
         if (!memberSet.has(uid)) formerIds.add(uid);
       });
     });
-    const members = memberIds.map(id => users[id]).filter(Boolean);
-    const formers = [...formerIds].map(id => users[id]).filter(Boolean);
+    // Column order: you first, then everyone else by how recently they
+    // posted (most recent photo wins); people who never posted come last.
+    const latestTs: Record<string, number> = {};
+    photos.forEach(p => {
+      const t = new Date(p.timestamp).getTime();
+      if (!latestTs[p.userId] || t > latestTs[p.userId]) latestTs[p.userId] = t;
+    });
+    const byRecency = (a: AppUser, b: AppUser) =>
+      (latestTs[b.id] || 0) - (latestTs[a.id] || 0) || a.name.localeCompare(b.name);
+    const me = user?.uid;
+    const members = memberIds
+      .map(id => users[id])
+      .filter(Boolean)
+      .sort((a, b) => {
+        if (a.id === me) return -1;
+        if (b.id === me) return 1;
+        return byRecency(a, b);
+      });
+    const formers = [...formerIds].map(id => users[id]).filter(Boolean).sort(byRecency);
     return [...members, ...formers];
-  }, [memberIds, displayedSlots, users]);
+  }, [memberIds, displayedSlots, users, photos, user?.uid]);
 
   const sortedPhotos = useMemo(() => {
     return [...photos].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
