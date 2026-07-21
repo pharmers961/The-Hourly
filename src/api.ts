@@ -21,6 +21,7 @@ interface CommentRow {
   profile_id: string;
   text: string;
   created_at: string;
+  group_id?: string | null; // null/absent = legacy comment, visible everywhere
 }
 
 interface ReactionRow {
@@ -314,6 +315,13 @@ export async function fetchGroupData(groupId: string): Promise<AppData> {
     .filter(row => row.photos)
     .map(row => row.photos!);
 
+  // Comments belong to the group they were written in: on a photo shared to
+  // several groups, only show this group's conversation (legacy comments
+  // without a group stay visible everywhere).
+  photoRows.forEach(p => {
+    p.comments = p.comments.filter(c => !c.group_id || c.group_id === groupId);
+  });
+
   // Photo/comment authors who have since left the group won't be in the
   // members lookup above — fetch those separately so their names still
   // resolve when browsing history
@@ -457,9 +465,22 @@ export async function hasEverCaptured(profileId: string): Promise<boolean> {
   return (data || []).length > 0;
 }
 
-export async function addComment(photoId: string, profileId: string, text: string): Promise<void> {
-  const { error } = await supabase.from('comments').insert({ photo_id: photoId, profile_id: profileId, text });
-  if (error) throw error;
+// group_id scopes the comment to the group it was written in — on photos
+// shared into several groups, each group only sees its own conversation.
+export async function addComment(photoId: string, profileId: string, text: string, groupId?: string | null): Promise<void> {
+  const { error } = await supabase
+    .from('comments')
+    .insert({ photo_id: photoId, profile_id: profileId, text, group_id: groupId ?? null });
+  if (error) {
+    // Database not yet migrated with the group_id column: post unscoped
+    // rather than failing the comment.
+    if (groupId && /group_id/.test(error.message || '')) {
+      const { error: retryError } = await supabase.from('comments').insert({ photo_id: photoId, profile_id: profileId, text });
+      if (retryError) throw retryError;
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function deleteComment(commentId: string): Promise<void> {

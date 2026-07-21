@@ -1718,13 +1718,22 @@ export default function App() {
     }
   };
 
+  const [isPostingComment, setIsPostingComment] = useState(false);
   const handleAddComment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedPhoto || !user || !commentText.trim()) return;
+    if (!selectedPhoto || !user || !commentText.trim() || isPostingComment) return;
 
+    const text = commentText.trim();
+    // A fast double-tap on Post shouldn't say the same thing twice
+    const lastComment = (selectedPhoto.comments || [])[selectedPhoto.comments!.length - 1];
+    if (lastComment && lastComment.userId === user.uid && lastComment.text === text) {
+      setCommentText('');
+      return;
+    }
+
+    setIsPostingComment(true);
     try {
-      const text = commentText.trim();
-      await api.addComment(selectedPhoto.id, user.uid, text);
+      await api.addComment(selectedPhoto.id, user.uid, text, selectedGroupId);
 
       const mentionedUsers = activeUsers.filter(u =>
         text.includes(`@${u.name.split(' ')[0]}`) ||
@@ -1741,7 +1750,9 @@ export default function App() {
       const fromName = user.displayName?.split(' ')[0] || 'Someone';
       await api.sendNotifications(
         [...notifyUsers]
-          // Respect each recipient's own preference
+          // Only people in this group (the comment is scoped to it), and
+          // respect each recipient's own preference
+          .filter(id => memberIds.includes(id))
           .filter(id => users[id]?.settings?.notifyComments !== false)
           .map(toProfileId => ({
             toProfileId,
@@ -1757,6 +1768,8 @@ export default function App() {
     } catch (err) {
       console.error('Failed to add comment:', err);
       showToast(`Failed to post comment${errDetail(err)}`);
+    } finally {
+      setIsPostingComment(false);
     }
   };
 
@@ -1787,7 +1800,7 @@ export default function App() {
   // Narrower time column + tighter gaps reclaim room for photo columns so
   // small groups (2-3 people) fit on a phone screen without horizontal
   // scrolling, rather than being forced wider than the viewport.
-  const gridStyle = { gridTemplateColumns: `48px repeat(${columnUsers.length > 0 ? columnUsers.length : 1}, 1fr)` };
+  const gridStyle = { gridTemplateColumns: `56px repeat(${columnUsers.length > 0 ? columnUsers.length : 1}, 1fr)` };
 
   const STANDARD_TIMEZONES = [
     { label: 'New York (EST)', value: 'America/New_York' },
@@ -2059,13 +2072,13 @@ export default function App() {
         ) : (
         <div
           ref={collageRef}
-          style={{ minWidth: Math.max(200, 48 + columnUsers.length * 88) }}
+          style={{ minWidth: Math.max(208, 56 + columnUsers.length * 88) }}
           className="max-w-4xl mx-auto px-2 md:px-10 pb-24 w-full print:px-0 print:pb-0"
         >
           {/* Column Headers (X-Axis: Names) */}
           <div className="sticky top-0 z-20 bg-paper pt-6 grid gap-2 md:gap-4 mb-4 border-b-[0.5px] border-ink pb-2 print:relative print:bg-card print:border-black print:pt-4" style={gridStyle}>
-            <div className="sticky left-0 z-30 bg-paper font-sans text-[10px] uppercase tracking-widest self-end hidden md:block print:bg-card print:text-black">Hour / Slot</div>
-            <div className="sticky left-0 z-30 bg-paper font-sans text-[10px] uppercase tracking-widest self-end md:hidden print:hidden">Time</div>
+            <div className="sticky left-0 z-30 bg-paper before:absolute before:inset-y-0 before:-left-2 before:w-2 md:before:-left-10 md:before:w-10 before:bg-paper print:before:hidden font-sans text-[10px] uppercase tracking-widest self-end hidden md:block print:bg-card print:text-black">Hour / Slot</div>
+            <div className="sticky left-0 z-30 bg-paper before:absolute before:inset-y-0 before:-left-2 before:w-2 md:before:-left-10 md:before:w-10 before:bg-paper print:before:hidden font-sans text-[10px] uppercase tracking-widest self-end md:hidden print:hidden">Time</div>
             {columnUsers.map(sibling => {
               // Split on any whitespace (incl. non-breaking spaces) so every
               // name renders as first name over last name.
@@ -2110,8 +2123,8 @@ export default function App() {
                   }`} 
                   style={gridStyle}
                 >
-                  <div className="sticky left-0 z-10 flex flex-col justify-center border-r-[0.5px] border-ink border-opacity-10 bg-paper print:border-black print:border-opacity-20 print:bg-card">
-                    <span className={`text-lg md:text-xl font-light italic leading-tight print:text-2xl print:text-black ${isCurrent ? 'text-gold print:text-black' : ''}`}>
+                  <div className="sticky left-0 z-10 flex flex-col justify-center border-r-[0.5px] border-ink border-opacity-10 bg-paper before:absolute before:inset-y-0 before:-left-2 before:w-2 md:before:-left-10 md:before:w-10 before:bg-paper print:before:hidden print:border-black print:border-opacity-20 print:bg-card">
+                    <span className={`text-lg md:text-xl font-light italic leading-tight whitespace-nowrap print:text-2xl print:text-black ${isCurrent ? 'text-gold print:text-black' : ''}`}>
                       {slot.displayTime}
                     </span>
                     <span className={`font-sans text-[8px] md:text-[9px] uppercase mt-1 print:text-[10px] print:text-black print:opacity-60 ${isCurrent ? 'tracking-wide text-gold font-bold print:font-normal' : 'tracking-widest opacity-50'}`}>
@@ -2551,8 +2564,8 @@ export default function App() {
                     placeholder="Add a comment..."
                     className="flex-1 bg-transparent border-b-[0.5px] border-ink px-2 py-2 font-sans text-xs outline-none focus:border-opacity-50 transition-colors"
                   />
-                  <button type="submit" disabled={!commentText.trim()} className="font-sans text-[10px] uppercase tracking-[0.2em] px-4 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30">
-                    Post
+                  <button type="submit" disabled={!commentText.trim() || isPostingComment} className="font-sans text-[10px] uppercase tracking-[0.2em] px-4 opacity-60 hover:opacity-100 transition-opacity disabled:opacity-30">
+                    {isPostingComment ? '...' : 'Post'}
                   </button>
                 </form>
 

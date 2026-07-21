@@ -100,6 +100,12 @@ alter table public.notifications drop constraint if exists notifications_type_ch
 alter table public.notifications add constraint notifications_type_check
   check (type in ('comment', 'mention', 'like'));
 
+-- Comments are scoped to the group they were written in: a photo shared to
+-- several groups keeps a separate conversation per group. Null = legacy
+-- comment from before this column existed, shown everywhere the photo is.
+alter table public.comments add column if not exists group_id uuid references public.groups(id) on delete cascade;
+create index if not exists comments_group_idx on public.comments (group_id);
+
 create index if not exists photos_taken_at_idx on public.photos (taken_at desc);
 create index if not exists comments_photo_idx on public.comments (photo_id);
 create index if not exists nudges_to_idx on public.nudges (to_profile_id);
