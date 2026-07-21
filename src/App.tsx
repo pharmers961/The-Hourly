@@ -856,6 +856,8 @@ export default function App() {
   // Matrix columns = current members, plus anyone who has a photo on the
   // displayed date (so a member who left still shows their past photos in
   // history, but has no column going forward). Members always keep a column.
+  // Session-frozen column order per group (see below)
+  const frozenColumnOrder = useRef<{ groupId: string | null; order: string[] }>({ groupId: null, order: [] });
   const columnUsers: AppUser[] = useMemo(() => {
     const memberSet = new Set(memberIds);
     const formerIds = new Set<string>();
@@ -883,8 +885,23 @@ export default function App() {
         return byRecency(a, b);
       });
     const formers = [...formerIds].map(id => users[id]).filter(Boolean).sort(byRecency);
-    return [...members, ...formers];
-  }, [memberIds, displayedSlots, users, photos, user?.uid]);
+    const candidates = [...members, ...formers];
+
+    // Freeze the order for the session: it's computed from recency when the
+    // group's data first loads, then held steady so columns don't shuffle
+    // mid-use as people post. A reload (or switching groups) re-ranks.
+    const frozen = frozenColumnOrder.current;
+    if (frozen.groupId !== selectedGroupId) {
+      frozenColumnOrder.current = { groupId: selectedGroupId, order: candidates.map(u => u.id) };
+    } else {
+      const known = new Set(frozen.order);
+      candidates.forEach(u => {
+        if (!known.has(u.id)) frozen.order.push(u.id); // newcomers join at the end
+      });
+    }
+    const rank = new Map(frozenColumnOrder.current.order.map((id, i) => [id, i]));
+    return [...candidates].sort((a, b) => (rank.get(a.id) ?? 999) - (rank.get(b.id) ?? 999));
+  }, [memberIds, displayedSlots, users, photos, user?.uid, selectedGroupId]);
 
   const sortedPhotos = useMemo(() => {
     return [...photos].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
