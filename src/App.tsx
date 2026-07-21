@@ -1546,6 +1546,61 @@ export default function App() {
     }
   };
 
+  // Download every photo this person has ever posted (across all groups) as
+  // one ZIP, named by capture time. Images are fetched one at a time and the
+  // archive is assembled in the browser — nothing extra stored server-side.
+  const [downloadProgress, setDownloadProgress] = useState<string | null>(null);
+  const handleDownloadMyPhotos = async () => {
+    if (!user || downloadProgress) return;
+    setDownloadProgress('Preparing...');
+    try {
+      const list = await api.fetchMyPhotoDownloads(user.uid);
+      if (list.length === 0) {
+        showToast('You have no photos to download yet.');
+        return;
+      }
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
+      const usedNames = new Set<string>();
+      let failed = 0;
+      for (let i = 0; i < list.length; i++) {
+        setDownloadProgress(`Fetching ${i + 1} of ${list.length}...`);
+        try {
+          const res = await fetch(list[i].url);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const blob = await res.blob();
+          const d = new Date(list[i].takenAt);
+          const p = (n: number) => String(n).padStart(2, '0');
+          let name = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}.jpg`;
+          if (usedNames.has(name)) name = name.replace('.jpg', `_${i + 1}.jpg`);
+          usedNames.add(name);
+          zip.file(name, blob);
+        } catch (err) {
+          console.warn('Skipping photo that failed to fetch:', err);
+          failed++;
+        }
+      }
+      if (failed === list.length) throw new Error('none of the photos could be fetched');
+      setDownloadProgress('Packing ZIP...');
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(zipBlob);
+      link.download = 'The-Hourly-My-Photos.zip';
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 60_000);
+      const got = list.length - failed;
+      showToast(
+        failed > 0 ? `Downloaded ${got} photos — ${failed} failed` : `Downloaded ${got} photo${got === 1 ? '' : 's'}`,
+        failed > 0 ? 'error' : 'success'
+      );
+    } catch (err) {
+      console.error('Photo download failed:', err);
+      showToast(`Failed to download your photos${errDetail(err)}`);
+    } finally {
+      setDownloadProgress(null);
+    }
+  };
+
   const handleSharePhoto = async () => {
     if (!selectedPhoto) return;
     const url = new URL(window.location.href);
@@ -3041,6 +3096,10 @@ export default function App() {
                 <button onClick={handleExportCollage} disabled={isGeneratingCollage} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity disabled:opacity-30 w-fit">
                   <ImageIcon size={14} />
                   <span>{isGeneratingCollage ? 'Exporting...' : 'Export Collage Image'}</span>
+                </button>
+                <button onClick={handleDownloadMyPhotos} disabled={!!downloadProgress} className="flex items-center gap-2 text-sm opacity-80 hover:opacity-100 transition-opacity disabled:opacity-50 w-fit">
+                  <Download size={14} className={downloadProgress ? 'animate-pulse' : ''} />
+                  <span>{downloadProgress || 'Download My Photos (ZIP)'}</span>
                 </button>
 
                 {isAdmin && (

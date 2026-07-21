@@ -430,6 +430,25 @@ export async function uploadPhotoToGroups(
   }
 }
 
+// Everything needed to download the caller's own photos: full-resolution
+// storage paths across all groups, freshly signed (the bucket is private).
+export interface MyPhotoDownload {
+  url: string;
+  takenAt: string;
+}
+
+export async function fetchMyPhotoDownloads(profileId: string): Promise<MyPhotoDownload[]> {
+  const { data, error } = await supabase
+    .from('photos')
+    .select('image_path, taken_at')
+    .eq('profile_id', profileId)
+    .order('taken_at');
+  if (error) throw describeError('fetch photo list failed', error);
+  const rows = (data || []) as { image_path: string; taken_at: string }[];
+  const urlFor = await buildUrlResolver(rows.map(r => r.image_path));
+  return rows.map(r => ({ url: urlFor(r.image_path), takenAt: r.taken_at }));
+}
+
 // Whether this person has ever posted a photo at all — drives the first-run
 // onboarding prompt for freshly joined members.
 export async function hasEverCaptured(profileId: string): Promise<boolean> {
