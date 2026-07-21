@@ -2357,7 +2357,9 @@ export default function App() {
                 </button>
 
               {!isFullscreenPhoto && (
-                <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-card px-3 py-2 border-[0.5px] border-ink shadow-md rounded-full z-20">
+                // In normal flow below the image (not overlapping its bottom
+                // edge) so the full photo stays visible
+                <div className="mt-3 mx-auto w-fit flex items-center gap-2 bg-card px-3 py-2 border-[0.5px] border-ink shadow-md rounded-full z-20">
                 {['❤️', '🔥', '😂', '😮'].map(emoji => {
                   const count = (selectedPhoto.reactions?.[emoji] || []).length;
                   const hasReacted = (selectedPhoto.reactions?.[emoji] || []).includes(user?.uid || '');
