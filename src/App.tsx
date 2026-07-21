@@ -1800,7 +1800,7 @@ export default function App() {
   // Narrower time column + tighter gaps reclaim room for photo columns so
   // small groups (2-3 people) fit on a phone screen without horizontal
   // scrolling, rather than being forced wider than the viewport.
-  const gridStyle = { gridTemplateColumns: `56px repeat(${columnUsers.length > 0 ? columnUsers.length : 1}, 1fr)` };
+  const gridStyle = { gridTemplateColumns: `repeat(${columnUsers.length > 0 ? columnUsers.length : 1}, 1fr)` };
 
   const STANDARD_TIMEZONES = [
     { label: 'New York (EST)', value: 'America/New_York' },
@@ -2072,13 +2072,13 @@ export default function App() {
         ) : (
         <div
           ref={collageRef}
-          style={{ minWidth: Math.max(208, 56 + columnUsers.length * 88) }}
+          style={{ minWidth: Math.max(208, 64 + columnUsers.length * 88) }}
           className="max-w-4xl mx-auto px-2 md:px-10 pb-24 w-full print:px-0 print:pb-0"
         >
           {/* Column Headers (X-Axis: Names) */}
-          <div className="sticky top-0 z-20 bg-paper pt-6 grid gap-2 md:gap-4 mb-4 border-b-[0.5px] border-ink pb-2 print:relative print:bg-card print:border-black print:pt-4" style={gridStyle}>
-            <div className="sticky left-0 z-30 bg-paper before:absolute before:inset-y-0 before:-left-2 before:w-2 md:before:-left-10 md:before:w-10 before:bg-paper print:before:hidden font-sans text-[10px] uppercase tracking-widest self-end hidden md:block print:bg-card print:text-black">Hour / Slot</div>
-            <div className="sticky left-0 z-30 bg-paper before:absolute before:inset-y-0 before:-left-2 before:w-2 md:before:-left-10 md:before:w-10 before:bg-paper print:before:hidden font-sans text-[10px] uppercase tracking-widest self-end md:hidden print:hidden">Time</div>
+          <div className="sticky top-0 z-20 bg-paper pt-6 flex gap-2 md:gap-4 mb-4 border-b-[0.5px] border-ink pb-2 print:relative print:bg-card print:border-black print:pt-4">
+            <div className="sticky left-0 z-30 w-14 shrink-0 bg-paper before:absolute before:inset-y-0 before:-left-2 before:w-2 md:before:-left-10 md:before:w-10 before:bg-paper print:before:hidden font-sans text-[10px] uppercase tracking-widest self-end print:bg-card print:text-black">Time</div>
+            <div className="grid gap-2 md:gap-4 flex-1 min-w-0" style={gridStyle}>
             {columnUsers.map(sibling => {
               // Split on any whitespace (incl. non-breaking spaces) so every
               // name renders as first name over last name.
@@ -2099,6 +2099,7 @@ export default function App() {
                 </div>
               );
             })}
+            </div>
           </div>
 
           {/* Content area */}
@@ -2118,12 +2119,11 @@ export default function App() {
                 <div 
                   id={isCurrent ? 'current-hour-slot' : undefined}
                   key={slot.hourKey} 
-                  className={`grid gap-2 md:gap-4 transition-colors print:page-break-inside-avoid print:h-[200px] ${
+                  className={`flex gap-2 md:gap-4 transition-colors print:page-break-inside-avoid print:h-[200px] ${
                     isCurrent ? 'outline outline-1 outline-offset-4 outline-gold bg-gold/5 print:outline-none print:bg-transparent' : ''
-                  }`} 
-                  style={gridStyle}
+                  }`}
                 >
-                  <div className="sticky left-0 z-10 flex flex-col justify-center border-r-[0.5px] border-ink border-opacity-10 bg-paper before:absolute before:inset-y-0 before:-left-2 before:w-2 md:before:-left-10 md:before:w-10 before:bg-paper print:before:hidden print:border-black print:border-opacity-20 print:bg-card">
+                  <div className="sticky left-0 z-10 w-14 shrink-0 flex flex-col justify-center border-r-[0.5px] border-ink border-opacity-10 bg-paper before:absolute before:inset-y-0 before:-left-2 before:w-2 md:before:-left-10 md:before:w-10 before:bg-paper print:before:hidden print:border-black print:border-opacity-20 print:bg-card">
                     <span className={`text-lg md:text-xl font-light italic leading-tight whitespace-nowrap print:text-2xl print:text-black ${isCurrent ? 'text-gold print:text-black' : ''}`}>
                       {slot.displayTime}
                     </span>
@@ -2131,7 +2131,8 @@ export default function App() {
                       {isCurrent ? <><span className="print:hidden whitespace-nowrap">Live Now</span><span className="hidden print:inline">{slot.displayDate}</span></> : slot.displayDate}
                     </span>
                   </div>
-                  
+
+                  <div className="grid gap-2 md:gap-4 flex-1 min-w-0" style={gridStyle}>
                   {columnUsers.map(sibling => {
                     const photo = slot.photos[sibling.id];
                     return (
@@ -2188,6 +2189,7 @@ export default function App() {
                       </div>
                     );
                   })}
+                  </div>
                 </div>
               );
             }))}
