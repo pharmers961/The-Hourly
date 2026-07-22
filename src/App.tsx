@@ -1479,6 +1479,48 @@ export default function App() {
     }
   };
 
+  // GPS permission status + on-demand request. iOS only shows its location
+  // popup when a page calls geolocation during use — this button triggers
+  // that ask deliberately. After a hard deny, browsers never re-prompt; all
+  // we can do is detect it and point at the browser setting.
+  const [locationPermission, setLocationPermission] = useState<'unknown' | 'granted' | 'prompt' | 'denied' | 'unavailable'>('unknown');
+  useEffect(() => {
+    if (!showSettings) return;
+    if (!('geolocation' in navigator)) {
+      setLocationPermission('unavailable');
+      return;
+    }
+    navigator.permissions
+      ?.query({ name: 'geolocation' as PermissionName })
+      .then(res => {
+        setLocationPermission(res.state as 'granted' | 'prompt' | 'denied');
+        res.onchange = () => setLocationPermission(res.state as 'granted' | 'prompt' | 'denied');
+      })
+      .catch(() => setLocationPermission('unknown'));
+  }, [showSettings]);
+
+  const handleRequestLocation = () => {
+    if (!('geolocation' in navigator)) {
+      showToast('Location is not available on this device.');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      () => {
+        setLocationPermission('granted');
+        showToast('Location enabled — your photos will carry where they were taken', 'success');
+      },
+      (err) => {
+        if (err.code === err.PERMISSION_DENIED) {
+          setLocationPermission('denied');
+          showToast('Location is blocked for The Hourly — allow it in your browser settings.');
+        } else {
+          showToast('Could not get a location fix. Try again near a window or outdoors.');
+        }
+      },
+      { timeout: 10000 }
+    );
+  };
+
   // Manual fallback for invite links that lost their way (in-app browsers,
   // sign-in in a different tab, stale service workers): paste the link or
   // bare code and join directly.
@@ -3087,6 +3129,31 @@ export default function App() {
                   placeholder="e.g. San Francisco"
                   className="bg-transparent border-b-[0.5px] border-ink px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors placeholder:opacity-30"
                 />
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <label className="font-sans text-[10px] uppercase tracking-widest opacity-60">Photo GPS Location</label>
+                {locationPermission === 'granted' ? (
+                  <div className="flex items-center gap-2 text-sm opacity-80">
+                    <MapPin size={14} className="text-green-600" />
+                    <span>Location enabled — photos carry where they were taken</span>
+                  </div>
+                ) : locationPermission === 'unavailable' ? (
+                  <div className="flex items-center gap-2 text-sm opacity-60">
+                    <MapPin size={14} />
+                    <span>Location isn't available on this device</span>
+                  </div>
+                ) : (
+                  <button onClick={handleRequestLocation} className="flex items-center gap-2 text-sm text-gold hover:opacity-100 transition-opacity w-fit">
+                    <MapPin size={14} />
+                    <span>Enable Location Access</span>
+                  </button>
+                )}
+                {locationPermission === 'denied' && (
+                  <p className="font-sans text-[9px] uppercase tracking-widest opacity-40 leading-relaxed">
+                    Location is blocked for this site. On iPhone: tap the "aA" (or puzzle) icon in Safari's address bar → Website Settings → Location → Allow, then try again. On Android: tap the lock icon → Permissions → Location.
+                  </p>
+                )}
               </div>
 
               <div className="flex flex-col gap-2">
