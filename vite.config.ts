@@ -49,7 +49,12 @@ export default defineConfig(() => {
           importScripts: ['push-sw.js'],
           // push-sw.js must load fresh with each SW version, not from the
           // precache manifest
-          globIgnores: ['push-sw.js']
+          globIgnores: ['push-sw.js'],
+          // Invite links (/join/<code>) are served by a Vercel function that
+          // sets up link previews and the ?join= redirect. The service
+          // worker's SPA navigation fallback must NOT swallow them, or a
+          // device that has visited before loses the join code entirely.
+          navigateFallbackDenylist: [/^\/join\//]
         }
       })
     ],

@@ -159,12 +159,19 @@ export default function App() {
     };
   }, []);
 
-  // Stash a ?join=<code> invite link immediately, before any auth redirect
-  // has a chance to drop the query string, so joining still works after the
-  // magic-link/Google round trip.
+  // Stash an invite code immediately, before any auth redirect has a chance
+  // to drop it, so joining still works after the magic-link/Google round
+  // trip. The code arrives as ?join=<code> normally — but when an installed
+  // service worker swallows the /join/<code> route and serves the app shell
+  // directly, the code is still sitting in the URL path, so read both.
   useEffect(() => {
-    const code = new URLSearchParams(window.location.search).get('join');
-    if (code) localStorage.setItem('pendingJoinCode', code);
+    const fromQuery = new URLSearchParams(window.location.search).get('join');
+    const pathMatch = window.location.pathname.match(/^\/join\/([^/?#]+)/);
+    const code = fromQuery || (pathMatch ? decodeURIComponent(pathMatch[1]) : null);
+    if (code) {
+      localStorage.setItem('pendingJoinCode', code);
+      if (pathMatch) window.history.replaceState({}, '', '/');
+    }
   }, []);
 
   // Compatibility shim: the UI below was written against Firebase's auth user
@@ -528,8 +535,16 @@ export default function App() {
         })
         .catch(err => {
           console.error('Failed to join group:', err);
-          localStorage.removeItem('pendingJoinCode');
-          showToast('That invite link is invalid or has expired.');
+          const msg = err instanceof Error ? err.message : String((err as { message?: unknown })?.message ?? err);
+          if (/invalid or has expired/i.test(msg)) {
+            // The server actually rejected the code — it's dead, drop it
+            localStorage.removeItem('pendingJoinCode');
+            showToast('That invite link is invalid or has expired.');
+          } else {
+            // Transient (network, auth timing): keep the code so the next
+            // app launch retries, and say what actually went wrong
+            showToast(`Could not join the group yet${errDetail(err)}`);
+          }
           refreshGroups();
         });
     } else {
@@ -1464,6 +1479,33 @@ export default function App() {
     }
   };
 
+  // Manual fallback for invite links that lost their way (in-app browsers,
+  // sign-in in a different tab, stale service workers): paste the link or
+  // bare code and join directly.
+  const [joinCodeInput, setJoinCodeInput] = useState('');
+  const [isJoiningByInput, setIsJoiningByInput] = useState(false);
+  const handleJoinByInput = async () => {
+    if (!user) return;
+    const raw = joinCodeInput.trim();
+    if (!raw) return;
+    const m = raw.match(/join[/=]([A-Za-z0-9_-]+)/);
+    const code = m ? m[1] : raw;
+    setIsJoiningByInput(true);
+    try {
+      const group = await api.joinGroupByCode(code);
+      localStorage.removeItem('pendingJoinCode');
+      setJoinCodeInput('');
+      await refreshGroups();
+      setSelectedGroupId(group.id);
+      showToast(`Joined "${group.name}"`, 'success');
+    } catch (err) {
+      console.error('Failed to join group:', err);
+      showToast(`Could not join${errDetail(err)}`);
+    } finally {
+      setIsJoiningByInput(false);
+    }
+  };
+
   const handleCreateGroup = async () => {
     const name = newGroupName.trim();
     if (!name) return;
@@ -2138,6 +2180,26 @@ export default function App() {
             >
               Create a Group
             </button>
+            <div className="mt-8 flex flex-col items-center gap-2 w-full max-w-xs">
+              <p className="font-sans text-[9px] uppercase tracking-[0.2em] opacity-40">Or paste an invite link</p>
+              <div className="flex gap-2 w-full">
+                <input
+                  type="text"
+                  value={joinCodeInput}
+                  onChange={(e) => setJoinCodeInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleJoinByInput(); }}
+                  placeholder="Link or invite code"
+                  className="flex-1 bg-transparent border-b-[0.5px] border-ink px-2 py-2 font-sans text-xs outline-none placeholder:opacity-30 min-w-0"
+                />
+                <button
+                  onClick={handleJoinByInput}
+                  disabled={!joinCodeInput.trim() || isJoiningByInput}
+                  className="font-sans text-[10px] uppercase tracking-widest px-4 border-[0.5px] border-ink opacity-80 hover:opacity-100 transition-opacity disabled:opacity-30"
+                >
+                  {isJoiningByInput ? '...' : 'Join'}
+                </button>
+              </div>
+            </div>
           </div>
         ) : (
         <div
