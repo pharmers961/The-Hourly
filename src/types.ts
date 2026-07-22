@@ -15,6 +15,7 @@ export interface User {
   timezone: string;
   lastActive?: string;
   settings?: UserSettings;
+  whatsappPhone?: string; // digits-only E.164, links WhatsApp captures to this profile
 }
 
 export interface PhotoMetadata {

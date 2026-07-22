@@ -13,6 +13,7 @@ interface ProfileRow {
   settings: UserSettings | Record<string, never>;
   firebase_uid: string | null;
   is_admin?: boolean;
+  whatsapp_phone?: string | null;
 }
 
 interface CommentRow {
@@ -74,6 +75,7 @@ function mapProfileRow(row: ProfileRow): AppUser {
     timezone: row.timezone || 'UTC',
     lastActive: row.last_active || undefined,
     settings: row.settings && Object.keys(row.settings).length > 0 ? (row.settings as UserSettings) : undefined,
+    whatsappPhone: row.whatsapp_phone || undefined,
   };
 }
 
@@ -189,6 +191,13 @@ export async function updateLastActive(profileId: string): Promise<void> {
 export async function saveProfileSettings(profileId: string, settings: UserSettings): Promise<void> {
   const { error } = await supabase.from('profiles').update({ settings }).eq('id', profileId);
   if (error) throw error;
+}
+
+// Digits-only E.164 (e.g. 15551234567) or null to unlink. Must be unique —
+// it's how the WhatsApp webhook matches an inbound photo to a person.
+export async function saveWhatsappPhone(profileId: string, phone: string | null): Promise<void> {
+  const { error } = await supabase.from('profiles').update({ whatsapp_phone: phone }).eq('id', profileId);
+  if (error) throw describeError('save WhatsApp number failed', error);
 }
 
 export async function saveProfileName(profileId: string, name: string): Promise<void> {

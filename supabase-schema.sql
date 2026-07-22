@@ -100,6 +100,18 @@ alter table public.notifications drop constraint if exists notifications_type_ch
 alter table public.notifications add constraint notifications_type_check
   check (type in ('comment', 'mention', 'like'));
 
+-- WhatsApp capture: photos DM'd to The Hourly's WhatsApp number are matched
+-- to a profile by this digits-only phone number (see
+-- supabase/functions/whatsapp-inbound). wa_processed_messages dedupes Meta's
+-- webhook retries; only the service role touches it.
+alter table public.profiles add column if not exists whatsapp_phone text unique;
+
+create table if not exists public.wa_processed_messages (
+  id text primary key,
+  processed_at timestamptz not null default now()
+);
+alter table public.wa_processed_messages enable row level security;
+
 -- Comments are scoped to the group they were written in: a photo shared to
 -- several groups keeps a separate conversation per group. Null = legacy
 -- comment from before this column existed, shown everywhere the photo is.

@@ -31,6 +31,7 @@ export default function App() {
   const [openSettingsSection, setOpenSettingsSection] = useState<string>('profile');
   const [localLocationInput, setLocalLocationInput] = useState('');
   const [localNameInput, setLocalNameInput] = useState('');
+  const [localWhatsappInput, setLocalWhatsappInput] = useState('');
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [isGeneratingCollage, setIsGeneratingCollage] = useState(false);
   const [isFullscreenPhoto, setIsFullscreenPhoto] = useState(false);
@@ -820,6 +821,7 @@ export default function App() {
       const displayLocation = activeUsers.find(u => u.id === user.uid)?.settings?.displayLocation || '';
       setLocalLocationInput(displayLocation);
       setLocalNameInput(profile?.name || '');
+      setLocalWhatsappInput(profile?.whatsappPhone || '');
       if (selectedGroupId) {
         setManageGroupName(selectedGroup?.name || '');
         api.fetchGroupMemberRoles(selectedGroupId)
@@ -1462,6 +1464,24 @@ export default function App() {
       showToast(`Failed to update${errDetail(err)}`);
     } finally {
       setAdminBusyId(null);
+    }
+  };
+
+  // Stored digits-only (WhatsApp's wa_id format: country code + number,
+  // no plus sign) so the inbound webhook can match senders exactly.
+  const handleSaveWhatsapp = async () => {
+    if (!profile) return;
+    const digits = localWhatsappInput.replace(/\D/g, '');
+    const value = digits || null;
+    if ((profile.whatsappPhone || null) === value) return;
+    try {
+      await api.saveWhatsappPhone(profile.id, value);
+      setProfile(prev => (prev ? { ...prev, whatsappPhone: value || undefined } : prev));
+      setLocalWhatsappInput(digits);
+      showToast(value ? 'WhatsApp number linked' : 'WhatsApp number removed', 'success');
+    } catch (err) {
+      console.error('Failed to save WhatsApp number:', err);
+      showToast(`Failed to save WhatsApp number${errDetail(err)}`);
     }
   };
 
@@ -3154,6 +3174,21 @@ export default function App() {
                     Location is blocked for this site. On iPhone: tap the "aA" (or puzzle) icon in Safari's address bar → Website Settings → Location → Allow, then try again. On Android: tap the lock icon → Permissions → Location.
                   </p>
                 )}
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <label className="font-sans text-[10px] uppercase tracking-widest opacity-60">WhatsApp Number</label>
+                <input
+                  type="tel"
+                  value={localWhatsappInput}
+                  onChange={(e) => setLocalWhatsappInput(e.target.value)}
+                  onBlur={handleSaveWhatsapp}
+                  placeholder="+1 555 123 4567"
+                  className="bg-transparent border-b-[0.5px] border-ink px-2 py-2 font-sans text-sm outline-none focus:border-opacity-50 transition-colors placeholder:opacity-30"
+                />
+                <p className="font-sans text-[9px] uppercase tracking-widest opacity-40 leading-relaxed">
+                  Include your country code. Once linked, photos you WhatsApp to The Hourly's number post to your groups automatically.
+                </p>
               </div>
 
               <div className="flex flex-col gap-2">
